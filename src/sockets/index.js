@@ -97,18 +97,49 @@ function initSockets(httpServer) {
         const cookies = cookie.parse(socket.handshake.headers.cookie || '');
         token = cookies[config.cookieName];
       }
-      const user = await userFromToken(token);
-      if (!user) return next(new Error('Authentication required'));
-      if (user.status !== 'active') return next(new Error('Account is not active'));
-      socket.data.user = user;
+      if (token) {
+        const user = await userFromToken(token);
+        if (user && user.status === 'active') {
+          socket.data.user = user;
+        }
+      }
       next();
-    } catch (err) {
-      next(new Error('Authentication failed'));
+    } catch {
+      next();
     }
   });
 
   io.on('connection', async (socket) => {
-    const user = socket.data.user;
+    let user = socket.data.user;
+
+    // Guest socket handler
+    if (!user) {
+      socket.on('authenticate', async ({ token } = {}, ack) => {
+        try {
+          const authedUser = await userFromToken(token);
+          if (authedUser && authedUser.status === 'active') {
+            socket.data.user = authedUser;
+            user = authedUser;
+            const authedUserId = authedUser._id.toString();
+            socket.join(`user:${authedUserId}`);
+            const sockets = onlineUsers.get(authedUserId) || new Set();
+            const wasOffline = sockets.size === 0;
+            sockets.add(socket.id);
+            onlineUsers.set(authedUserId, sockets);
+            if (wasOffline) {
+              await setPresence(io, authedUserId, 'online');
+              io.emit('user_online', {
+                userId: authedUserId,
+                user: { id: authedUserId, username: authedUser.username, displayName: authedUser.displayName, avatarId: authedUser.avatarId },
+              });
+            }
+            if (typeof ack === 'function') ack({ success: true });
+          }
+        } catch {}
+      });
+      return;
+    }
+
     const userId = user._id.toString();
 
     // --- Personal room for user-targeted events & notifications ---

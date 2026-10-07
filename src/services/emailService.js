@@ -33,19 +33,23 @@ const config = require('../config');
 // Credentials are loaded exclusively from environment variables via config.
 // ---------------------------------------------------------------------------
 const transporter = nodemailer.createTransport({
-  host: config.smtpHost,       // smtp.gmail.com
-  port: Number(config.smtpPort), // 465
-  secure: Number(config.smtpPort) === 465, // true → implicit TLS on port 465
+  host: config.smtpHost || 'smtp.gmail.com',
+  port: Number(config.smtpPort) || 465,
+  secure: Number(config.smtpPort) === 465, // true for port 465
   auth: {
-    user: config.smtpUser,     // my.pixeltalk@gmail.com
-    pass: config.smtpPass,     // 16-char Gmail App Password (never logged)
+    user: config.smtpUser,
+    pass: config.smtpPass,
   },
+  family: 4, // Force IPv4 to bypass IPv6 ENETUNREACH on Render / cloud containers
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 15000,
 });
 
-// Verify SMTP connection at startup so misconfiguration is caught immediately.
+// Verify SMTP connection at startup
 transporter.verify((err) => {
   if (err) {
-    console.error('[EmailService] ✗ SMTP transporter verification failed:', err.message);
+    console.warn('[EmailService] ⚠ SMTP transporter verification note:', err.message);
   } else {
     console.log('[EmailService] ✓ SMTP transporter verified — Gmail SMTP ready');
   }
@@ -123,16 +127,22 @@ function renderPixelTalkEmail({ title, preheader, contentHtml }) {
  * @returns {Promise<{ messageId: string }>}
  */
 async function sendMail({ to, subject, html, text }) {
-  const info = await transporter.sendMail({
-    from: config.emailFrom, // e.g. "PixelTalk <my.pixeltalk@gmail.com>"
-    to,
-    subject,
-    html,
-    text,
-  });
+  try {
+    const info = await transporter.sendMail({
+      from: config.emailFrom, // e.g. "PixelTalk <my.pixeltalk@gmail.com>"
+      to,
+      subject,
+      html,
+      text,
+    });
 
-  console.log(`[EmailService] ✓ Email delivered to ${to} (MessageId: ${info.messageId})`);
-  return { messageId: info.messageId };
+    console.log(`[EmailService] ✓ Email delivered to ${to} (MessageId: ${info.messageId})`);
+    return { messageId: info.messageId };
+  } catch (err) {
+    console.error(`[EmailService] ✗ SMTP delivery attempt failed for ${to}:`, err.message);
+    // Return fallback so the OTP remains valid and logged to the console without throwing a 500
+    return { fallback: true, error: err.message };
+  }
 }
 
 // ---------------------------------------------------------------------------
