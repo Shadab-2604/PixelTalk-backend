@@ -36,9 +36,9 @@ module.exports = {
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
   clientUrl: process.env.CLIENT_URL,
   cookieName: 'pixeltalk_token',
-  cookieMaxAgeMs: 7 * 24 * 60 * 60 * 1000,
-  // Nodemailer Gmail SMTP configuration — credentials read from backend/.env only
-  emailFrom: process.env.EMAIL_FROM || 'PixelTalk <my.pixeltalk@gmail.com>',
+  // Email configuration (Resend HTTPS API or Nodemailer SMTP)
+  resendApiKey: process.env.RESEND_API_KEY,
+  emailFrom: process.env.EMAIL_FROM || 'PixelTalk <onboarding@resend.dev>',
   smtpHost: process.env.SMTP_HOST || 'smtp.gmail.com',
   smtpPort: Number(process.env.SMTP_PORT) || 465,
   smtpUser: process.env.SMTP_USER,

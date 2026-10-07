@@ -127,22 +127,60 @@ function renderPixelTalkEmail({ title, preheader, contentHtml }) {
  * @returns {Promise<{ messageId: string }>}
  */
 async function sendMail({ to, subject, html, text }) {
-  try {
-    const info = await transporter.sendMail({
-      from: config.emailFrom, // e.g. "PixelTalk <my.pixeltalk@gmail.com>"
-      to,
-      subject,
-      html,
-      text,
-    });
+  // Option 1: Deliver via Resend HTTPS REST API (Port 443 — 100% cloud-compatible, never blocked by Render)
+  if (config.resendApiKey) {
+    try {
+      const fromAddress = config.emailFrom.includes('<')
+        ? config.emailFrom
+        : 'PixelTalk <onboarding@resend.dev>';
 
-    console.log(`[EmailService] ✓ Email delivered to ${to} (MessageId: ${info.messageId})`);
-    return { messageId: info.messageId };
-  } catch (err) {
-    console.error(`[EmailService] ✗ SMTP delivery attempt failed for ${to}:`, err.message);
-    // Return fallback so the OTP remains valid and logged to the console without throwing a 500
-    return { fallback: true, error: err.message };
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.resendApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: fromAddress,
+          to: [to],
+          subject,
+          html,
+          text,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || `Resend API returned status ${response.status}`);
+      }
+
+      console.log(`[EmailService] ✓ Email delivered to ${to} via Resend API (MessageId: ${data.id})`);
+      return { messageId: data.id };
+    } catch (err) {
+      console.error(`[EmailService] ✗ Resend API dispatch failed for ${to}:`, err.message);
+    }
   }
+
+  // Option 2: Fallback to Nodemailer SMTP (e.g. Gmail over TLS/STARTTLS)
+  if (config.smtpPass && config.smtpUser) {
+    try {
+      const info = await transporter.sendMail({
+        from: config.emailFrom,
+        to,
+        subject,
+        html,
+        text,
+      });
+
+      console.log(`[EmailService] ✓ Email delivered to ${to} via SMTP (MessageId: ${info.messageId})`);
+      return { messageId: info.messageId };
+    } catch (err) {
+      console.warn(`[EmailService] ⚠ SMTP delivery attempt note for ${to}:`, err.message);
+    }
+  }
+
+  // Fallback: OTP is always printed to Render/server logs
+  return { fallback: true };
 }
 
 // ---------------------------------------------------------------------------
