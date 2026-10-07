@@ -12,14 +12,64 @@
  * PixelTalk requires a central server to process HTTP requests (authentication, user profile,
  * image uploads, admin commands) and handle real-time WebSocket communication (0ms chat delivery,
  * typing indicators, online presence status).
+ *
+ * HOW IT WORKS:
+ * 1. Security Setup: Helmet sets secure HTTP headers, CORS restricts access to trusted frontend URLs,
+ *    and body-parser caps JSON payloads at 100KB to protect against Denial of Service (DoS) attacks.
+ * 2. Database Connection: Connects to MongoDB with connection pooling (10-100 sockets) for fast queries.
+ * 3. Environment Admin Seeding: Ensures the system administrator specified in `.env` exists in MongoDB.
+ * 4. API & Sockets: Mounts Express routes on `/api` and boots Socket.IO on top of the HTTP server.
+ * 5. Graceful Shutdown: Listens for `SIGINT` signals to safely close database connections.
+ *
+ * CONNECTED MODULES:
+ * - backend/src/config/index.js (environment variables & credentials)
+ * - backend/src/routes/index.js (all REST API endpoints)
+ * - backend/src/sockets/index.js (real-time chat event handlers)
+ * - backend/src/middleware/errorHandler.js (centralized error handling)
+ * - backend/src/models/User.js (admin seeding & account management)
  * ============================================================
  */
 
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const cookieParser = require('cookie-parser');
 const mongoose = require('mongoose');
+const dns = require('dns');
+
+try {
+  // Ensure reliable DNS resolution for MongoDB Atlas SRV connection strings
+  dns.setServers(['8.8.8.8', '1.1.1.1', '8.8.4.4']);
+} catch {
+  /* Ignore in case custom dns is restricted */
+}
+
 const config = require('./config');
-const app = require('./app');
-const { connectDb } = require('./utils/db');
+const routes = require('./routes');
+const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { initSockets } = require('./sockets');
+const { expressCorsOrigin } = require('./utils/cors');
+
+const app = express();
+
+// Trust reverse proxies (Render, Cloudflare, etc.) for secure cookies & client IP rate limiting
+app.set('trust proxy', 1);
+
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+app.use(
+  cors({
+    origin: expressCorsOrigin,
+    credentials: true,
+  }),
+);
+app.use(express.json({ limit: '100kb' }));
+app.use(cookieParser());
+
+app.get('/api/health', (req, res) => res.json({ success: true, data: { status: 'ok', uptime: process.uptime() } }));
+app.use('/api', routes);
+app.use(notFoundHandler);
+app.use(errorHandler);
+
 const User = require('./models/User');
 
 async function ensureAdminUser() {
@@ -58,12 +108,17 @@ async function ensureAdminUser() {
 }
 
 async function start() {
-  await connectDb();
+  await mongoose.connect(config.mongoUri, {
+    maxPoolSize: 100,
+    minPoolSize: 10,
+    serverSelectionTimeoutMS: 5000,
+  });
+  console.log('[backend] MongoDB connected (maxPoolSize: 100, minPoolSize: 10)');
 
   // Ensure admin user from .env exists and has admin authority
   await ensureAdminUser();
 
-  const server = app.listen(config.port, () => {
+  const server = app.listen(config.port, '0.0.0.0', () => {
     console.log(`[backend] HTTP API ready on port ${config.port} (/api)`);
   });
 
@@ -82,5 +137,3 @@ process.on('SIGINT', async () => {
   await mongoose.disconnect();
   process.exit(0);
 });
-
-module.exports = { app, start };
