@@ -65,7 +65,29 @@ app.use(
 app.use(express.json({ limit: '100kb' }));
 app.use(cookieParser());
 
-app.get('/api/health', (req, res) => res.json({ success: true, data: { status: 'ok', uptime: process.uptime() } }));
+// Root & Health check endpoints
+app.get('/', (req, res) =>
+  res.json({
+    success: true,
+    message: 'PixelTalk Backend API is online and operational',
+    data: { status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() },
+  }),
+);
+
+app.get('/api', (req, res) =>
+  res.json({
+    success: true,
+    message: 'PixelTalk REST API Gateway',
+    data: { status: 'ok', uptime: process.uptime() },
+  }),
+);
+
+app.get('/api/health', (req, res) =>
+  res.json({
+    success: true,
+    data: { status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() },
+  }),
+);
 app.use('/api', routes);
 app.use(notFoundHandler);
 app.use(errorHandler);
