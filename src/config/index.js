@@ -36,13 +36,10 @@ module.exports = {
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
   clientUrl: process.env.CLIENT_URL,
   cookieName: 'pixeltalk_token',
-  // Email configuration (Resend HTTPS API or Nodemailer SMTP)
-  resendApiKey: process.env.RESEND_API_KEY,
-  emailFrom: process.env.EMAIL_FROM || 'PixelTalk <onboarding@resend.dev>',
-  smtpHost: process.env.SMTP_HOST || 'smtp.gmail.com',
-  smtpPort: Number(process.env.SMTP_PORT) || 465,
-  smtpUser: process.env.SMTP_USER,
-  smtpPass: process.env.SMTP_PASS, // Gmail App Password — never log this value
+  cookieMaxAgeMs: 7 * 24 * 60 * 60 * 1000, // 7 days in ms
+  // Email configuration (Brevo HTTPS REST API)
+  brevoApiKey: process.env.BREVO_API_KEY,
+  emailFrom: process.env.EMAIL_FROM || 'PixelTalk <skgamerpro123@gmail.com>',
   adminEmail: (process.env.ADMIN_EMAIL || 'admin@pixeltalk.dev').toLowerCase().trim(),
   adminUsername: (process.env.ADMIN_USERNAME || 'admin').toLowerCase().trim(),
   adminDisplayName: process.env.ADMIN_DISPLAY_NAME || 'Admin',

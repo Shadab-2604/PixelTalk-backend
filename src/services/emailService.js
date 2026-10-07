@@ -4,60 +4,48 @@
  * Responsibility:
  * Generates brand-aligned retro HTML email templates and delivers transactional emails
  * (email verification OTP, login OTP, password reset OTP, and welcome notifications)
- * via Nodemailer using Gmail SMTP (smtp.gmail.com:465 with TLS).
+ * via the Brevo HTTPS REST API (api.brevo.com/v3/smtp/email).
  *
  * CONNECTED MODULES:
  * - Services: backend/src/services/otpService.js, backend/src/services/authService.js
- * - Config:   backend/src/config/index.js (smtpHost, smtpPort, smtpUser, smtpPass, emailFrom)
+ * - Config:   backend/src/config/index.js (brevoApiKey, emailFrom)
  *
  * CONCEPTS:
- * - Single Reusable Transporter: One `nodemailer.createTransport()` instance is shared
- *   across all email functions. Creating a new transporter per send is wasteful and
- *   can cause connection pool exhaustion under load.
- * - Gmail App Password: `smtpPass` must be a 16-character Gmail App Password (not your
- *   account password). Generate one at: Google Account → Security → 2-Step Verification
- *   → App Passwords. Never log or expose this value.
- * - Brand-Consistent HTML Emails: All emails use inline styles embodying the PixelTalk
+ * - Cloud-Native HTTPS API: Uses port 443 (HTTPS REST API via fetch), bypassing all outbound
+ *   SMTP port restrictions on cloud hosting platforms like Render.
+ * - Zero-Dependency: No SMTP transporter or heavy nodemailer library required.
+ * - Always-Visible OTP Fallback: Every generated OTP is logged directly to the server
+ *   console so development and testing can proceed seamlessly even without an API key.
+ * - Brand-Consistent HTML Emails: All templates use inline styles embodying the PixelTalk
  *   design system (warm cream #FCECD8, dark terracotta #6E3511, olive #597928).
- * - SMTP Verification: `transporter.verify()` is called at module load time to surface
- *   credential or network errors immediately rather than at first send.
  */
 
 'use strict';
 
-const nodemailer = require('nodemailer');
 const config = require('../config');
 
-// ---------------------------------------------------------------------------
-// Single reusable Nodemailer transporter — Gmail SMTP over TLS (port 465)
-// Credentials are loaded exclusively from environment variables via config.
-// ---------------------------------------------------------------------------
-const transporter = nodemailer.createTransport({
-  host: config.smtpHost || 'smtp.gmail.com',
-  port: Number(config.smtpPort) || 465,
-  secure: Number(config.smtpPort) === 465, // true for port 465
-  auth: {
-    user: config.smtpUser,
-    pass: config.smtpPass,
-  },
-  family: 4, // Force IPv4 to bypass IPv6 ENETUNREACH on Render / cloud containers
-  connectionTimeout: 10000,
-  greetingTimeout: 10000,
-  socketTimeout: 15000,
-});
-
-// Verify SMTP connection at startup
-transporter.verify((err) => {
-  if (err) {
-    console.warn('[EmailService] ⚠ SMTP transporter verification note:', err.message);
-  } else {
-    console.log('[EmailService] ✓ SMTP transporter verified — Gmail SMTP ready');
+/**
+ * Parses a "Name <email@domain.com>" or "email@domain.com" string into Brevo sender object.
+ *
+ * @param {string} fromStr
+ * @returns {{ name: string, email: string }}
+ */
+function parseSender(fromStr) {
+  if (!fromStr) {
+    return { name: 'PixelTalk', email: 'skgamerpro123@gmail.com' };
   }
-});
-
-// ---------------------------------------------------------------------------
-// Private helpers
-// ---------------------------------------------------------------------------
+  const match = fromStr.match(/^(.*?)\s*<(.+?)>$/);
+  if (match) {
+    return {
+      name: match[1].trim() || 'PixelTalk',
+      email: match[2].trim(),
+    };
+  }
+  return {
+    name: 'PixelTalk',
+    email: fromStr.trim(),
+  };
+}
 
 /**
  * Renders the shared PixelTalk retro HTML email shell.
@@ -120,66 +108,58 @@ function renderPixelTalkEmail({ title, preheader, contentHtml }) {
 }
 
 /**
- * Core mail dispatch function. Sends an email via the shared Nodemailer
- * Gmail SMTP transporter. Throws on SMTP failure so callers can handle errors.
+ * Core mail dispatch function using Brevo (Sendinblue) Transactional REST API.
+ * Uses HTTPS port 443 — guaranteed to work in cloud container environments.
  *
- * @param {{ to: string, subject: string, html: string, text: string }} opts
- * @returns {Promise<{ messageId: string }>}
+ * @param {{ to: string, recipientName?: string, subject: string, html: string, text: string }} opts
+ * @returns {Promise<{ messageId?: string, fallback?: boolean }>}
  */
-async function sendMail({ to, subject, html, text }) {
-  // Option 1: Deliver via Resend HTTPS REST API (Port 443 — 100% cloud-compatible, never blocked by Render)
-  if (config.resendApiKey) {
+async function sendMail({ to, recipientName = 'Player', subject, html, text }) {
+  if (config.brevoApiKey) {
     try {
-      const fromAddress = config.emailFrom.includes('<')
-        ? config.emailFrom
-        : 'PixelTalk <onboarding@resend.dev>';
+      const sender = parseSender(config.emailFrom);
 
-      const response = await fetch('https://api.resend.com/emails', {
+      const response = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${config.resendApiKey}`,
+          'api-key': config.brevoApiKey,
           'Content-Type': 'application/json',
+          'Accept': 'application/json',
         },
         body: JSON.stringify({
-          from: fromAddress,
-          to: [to],
+          sender: {
+            name: sender.name,
+            email: sender.email,
+          },
+          to: [
+            {
+              email: to,
+              name: recipientName || 'Player',
+            },
+          ],
           subject,
-          html,
-          text,
+          htmlContent: html,
+          textContent: text,
         }),
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
+
       if (!response.ok) {
-        throw new Error(data.message || `Resend API returned status ${response.status}`);
+        console.error(`[EmailService] ✗ Brevo API error (${response.status}):`, data.message || data);
+      } else {
+        const messageId = data.messageId || 'sent';
+        console.log(`[EmailService] ✓ Email delivered to ${to} via Brevo API (MessageId: ${messageId})`);
+        return { messageId };
       }
-
-      console.log(`[EmailService] ✓ Email delivered to ${to} via Resend API (MessageId: ${data.id})`);
-      return { messageId: data.id };
     } catch (err) {
-      console.error(`[EmailService] ✗ Resend API dispatch failed for ${to}:`, err.message);
+      console.error(`[EmailService] ✗ Brevo API dispatch exception for ${to}:`, err.message);
     }
+  } else {
+    console.warn(`[EmailService] ⚠ BREVO_API_KEY is not set. Email delivery skipped; code is logged above.`);
   }
 
-  // Option 2: Fallback to Nodemailer SMTP (e.g. Gmail over TLS/STARTTLS)
-  if (config.smtpPass && config.smtpUser) {
-    try {
-      const info = await transporter.sendMail({
-        from: config.emailFrom,
-        to,
-        subject,
-        html,
-        text,
-      });
-
-      console.log(`[EmailService] ✓ Email delivered to ${to} via SMTP (MessageId: ${info.messageId})`);
-      return { messageId: info.messageId };
-    } catch (err) {
-      console.warn(`[EmailService] ⚠ SMTP delivery attempt note for ${to}:`, err.message);
-    }
-  }
-
-  // Fallback: OTP is always printed to Render/server logs
+  // Fallback: OTP is always logged to the server terminal
   return { fallback: true };
 }
 
@@ -245,7 +225,7 @@ If you did not request this verification, you can safely ignore this email.
     contentHtml,
   });
 
-  return sendMail({ to: email, subject, html, text });
+  return sendMail({ to: email, recipientName: displayName, subject, html, text });
 }
 
 /**
@@ -303,7 +283,7 @@ If you did not attempt to log in, you can safely ignore this email.
     contentHtml,
   });
 
-  return sendMail({ to: email, subject, html, text });
+  return sendMail({ to: email, recipientName: displayName, subject, html, text });
 }
 
 /**
@@ -364,7 +344,7 @@ If you did not request a password reset, you can safely ignore this message.
     contentHtml,
   });
 
-  return sendMail({ to: email, subject, html, text });
+  return sendMail({ to: email, recipientName: displayName, subject, html, text });
 }
 
 /**
@@ -417,7 +397,7 @@ Your PixelTalk account is ready. Start chatting, join rooms, and connect with yo
     contentHtml,
   });
 
-  return sendMail({ to: email, subject, html, text });
+  return sendMail({ to: email, recipientName: displayName, subject, html, text });
 }
 
 module.exports = {

@@ -71,14 +71,14 @@ const userSchema = new mongoose.Schema(
 );
 
 // Hash whenever the password field is set or changed
-userSchema.pre('save', async function hashPassword(next) {
-  if (!this.isModified('passwordHash')) return next();
+userSchema.pre('save', async function hashPassword() {
+  if (!this.isModified('passwordHash')) return;
   const salt = await bcrypt.genSalt(10);
   this.passwordHash = await bcrypt.hash(this.passwordHash, salt);
-  next();
 });
 
-userSchema.methods.comparePassword = function comparePassword(candidate) {
+userSchema.methods.comparePassword = async function comparePassword(candidate) {
+  if (!this.passwordHash || !candidate) return false;
   return bcrypt.compare(candidate, this.passwordHash);
 };
 
