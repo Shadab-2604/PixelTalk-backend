@@ -158,6 +158,7 @@ async function sendVerificationOtpEmail({ email, displayName, otp }) {
   console.log(`\n============================================================`);
   console.log(`🔐 [PIXELTALK OTP] Email Verification`);
   console.log(`📧 Target : ${email}`);
+  console.log(`🔢 Code   : ${otp}`);
   console.log(`⏰ Expires : 5 minutes`);
   console.log(`============================================================\n`);
 
@@ -218,6 +219,7 @@ async function sendLoginOtpEmail({ email, displayName, otp }) {
   console.log(`\n============================================================`);
   console.log(`🔐 [PIXELTALK OTP] Login Verification`);
   console.log(`📧 Target : ${email}`);
+  console.log(`🔢 Code   : ${otp}`);
   console.log(`⏰ Expires : 5 minutes`);
   console.log(`============================================================\n`);
 
@@ -275,6 +277,7 @@ async function sendPasswordResetEmail({ email, displayName, otp }) {
   console.log(`\n============================================================`);
   console.log(`🔐 [PIXELTALK OTP] Password Reset`);
   console.log(`📧 Target : ${email}`);
+  console.log(`🔢 Code   : ${otp}`);
   console.log(`⏰ Expires : 5 minutes`);
   console.log(`============================================================\n`);
 
