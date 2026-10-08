@@ -96,6 +96,15 @@ async function getUser(req, res, next) {
   }
 }
 
+async function getUserByUsername(req, res, next) {
+  try {
+    const user = await userService.getProfile(req.params.username, req.user?._id);
+    ok(res, { user });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function search(req, res, next) {
   try {
     const users = await userService.searchUsers(req.query.q, req.query.limit, req.user?._id);
@@ -150,6 +159,7 @@ module.exports = {
   toggleMute,
   toggleVibrate,
   getUser,
+  getUserByUsername,
   search,
   uploadAvatar,
   deleteAvatar,

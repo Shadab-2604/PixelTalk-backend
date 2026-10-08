@@ -272,10 +272,19 @@ async function getById(id) {
   return user;
 }
 
-async function getProfile(id, viewerId) {
-  if (!mongoose.isValidObjectId(id)) throw new ApiError(400, 'Invalid user id');
-  const user = await User.findById(id);
-  if (!user || user.status !== 'active') throw new ApiError(404, 'User not found');
+async function getProfile(idOrUsername, viewerId) {
+  if (!idOrUsername) throw new ApiError(400, 'User identifier required');
+
+  let user = null;
+  if (mongoose.isValidObjectId(idOrUsername)) {
+    user = await User.findById(idOrUsername);
+  }
+  if (!user) {
+    const cleanUsername = String(idOrUsername).trim().replace(/^@+/, '').toLowerCase();
+    user = await User.findOne({ username: cleanUsername });
+  }
+
+  if (!user || user.status !== 'active') throw new ApiError(404, 'User not found or account is inactive');
 
   const followService = require('./followService');
   const isOwner = viewerId && String(user._id) === String(viewerId);
@@ -283,10 +292,30 @@ async function getProfile(id, viewerId) {
   const counts = await followService.getFollowCounts(user._id);
 
   const base = publicUser(user, viewerId, followStatus);
+
+  /**
+   * Social context shown on another user's profile:
+   * "Followed by" is derived from the existing follow graph:
+   *   people followed by the viewer (viewerFollowing)
+   *              INTERSECT
+   *   followers of the viewed user (targetFollowers)
+   *
+   * Privacy filtering: Only calculated for non-owners when target profile is public
+   * OR when the viewer is an approved follower of a private profile.
+   */
+  let socialContext = { followedBy: [], followedByCount: 0 };
+  const isPrivate = user.privacy?.accountType === 'private';
+  const canViewSocialContext = !isOwner && (!isPrivate || followStatus === 'ACCEPTED');
+
+  if (canViewSocialContext && viewerId) {
+    socialContext = await followService.getCommonFollowers(viewerId, user._id);
+  }
+
   return {
     ...base,
     followersCount: counts.followersCount,
     followingCount: counts.followingCount,
+    socialContext,
   };
 }
 

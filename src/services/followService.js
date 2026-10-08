@@ -263,6 +263,65 @@ async function getFollowing(userId, viewerId, { page = 1, limit = 20 } = {}) {
   };
 }
 
+/**
+ * Social context: Calculate people the viewer follows who also follow the target profile.
+ * Mathematical definition: viewerFollowing ∩ targetFollowers
+ *
+ * Performance: Uses compound index { followerId: 1, status: 1 } and { followingId: 1, status: 1 }
+ * to perform fast indexed set intersection without memory leaks or N+1 queries.
+ */
+async function getCommonFollowers(viewerId, targetUserId, limit = 3) {
+  if (!viewerId || !targetUserId || String(viewerId) === String(targetUserId)) {
+    return { followedBy: [], followedByCount: 0 };
+  }
+
+  // 1. Get accounts the current viewer follows (status = 'ACCEPTED')
+  const viewerFollows = await Follow.find({ followerId: viewerId, status: 'ACCEPTED' })
+    .select('followingId')
+    .lean();
+
+  const candidateIds = viewerFollows.map((f) => f.followingId);
+  if (candidateIds.length === 0) {
+    return { followedBy: [], followedByCount: 0 };
+  }
+
+  // 2. Find which of these candidate accounts follow targetUserId (status = 'ACCEPTED')
+  const commonRecords = await Follow.find({
+    followingId: targetUserId,
+    followerId: { $in: candidateIds },
+    status: 'ACCEPTED',
+  })
+    .select('followerId')
+    .lean();
+
+  const totalCommonCount = commonRecords.length;
+  if (totalCommonCount === 0) {
+    return { followedBy: [], followedByCount: 0 };
+  }
+
+  const sampleIds = commonRecords.slice(0, limit).map((r) => r.followerId);
+
+  // 3. Fetch minimal public user info for the sample
+  const sampleUsers = await User.find({
+    _id: { $in: sampleIds },
+    status: 'active',
+  })
+    .select('username displayName avatarId avatarUrl')
+    .lean();
+
+  return {
+    followedBy: sampleUsers.map((u) => ({
+      _id: u._id,
+      id: u._id,
+      username: u.username,
+      displayName: u.displayName,
+      avatarId: u.avatarId,
+      avatarUrl: u.avatarUrl || '',
+    })),
+    followedByCount: totalCommonCount,
+  };
+}
+
 module.exports = {
   followUser,
   unfollowUser,
@@ -272,4 +331,5 @@ module.exports = {
   getPendingRequests,
   getFollowers,
   getFollowing,
+  getCommonFollowers,
 };

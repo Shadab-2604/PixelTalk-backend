@@ -90,6 +90,7 @@ router.post('/users/:id/follow', requireAuth, asyncHandler(follow.followUser));
 router.post('/users/:id/unfollow', requireAuth, asyncHandler(follow.unfollowUser));
 router.get('/users/:id/followers', requireAuth, asyncHandler(follow.getFollowers));
 router.get('/users/:id/following', requireAuth, asyncHandler(follow.getFollowing));
+router.get('/users/by-username/:username', requireAuth, asyncHandler(users.getUserByUsername));
 router.get('/users/:id', requireAuth, asyncHandler(users.getUser));
 
 // ---------------- Chat Sections (Personal Folders) ----------------
