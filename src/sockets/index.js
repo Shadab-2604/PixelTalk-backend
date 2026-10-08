@@ -335,21 +335,45 @@ function initSockets(httpServer) {
       try {
         const activeUser = socket.data.user || user;
         await messageService.assertMember(conversationId, activeUser._id);
-        socket.to(roomFor(conversationId)).emit('typing_start', {
+        const typingPayload = {
           conversationId,
           userId: activeUser._id.toString(),
           user: { id: activeUser._id.toString(), displayName: activeUser.displayName },
-        });
+        };
+        socket.to(roomFor(conversationId)).emit('typing_start', typingPayload);
+
+        const convo = await Conversation.findById(conversationId).select('members');
+        if (convo && Array.isArray(convo.members)) {
+          for (const m of convo.members) {
+            const memberId = String(m._id || m);
+            if (memberId !== activeUser._id.toString()) {
+              io.to(`user:${memberId}`).except(roomFor(conversationId)).emit('typing_start', typingPayload);
+            }
+          }
+        }
       } catch {}
     });
 
-    socket.on('typing_stop', ({ conversationId } = {}) => {
+    socket.on('typing_stop', async ({ conversationId } = {}) => {
       if (!conversationId) return;
-      const activeUser = socket.data.user || user;
-      socket.to(roomFor(conversationId)).emit('typing_stop', {
-        conversationId,
-        userId: activeUser._id.toString(),
-      });
+      try {
+        const activeUser = socket.data.user || user;
+        const stopPayload = {
+          conversationId,
+          userId: activeUser._id.toString(),
+        };
+        socket.to(roomFor(conversationId)).emit('typing_stop', stopPayload);
+
+        const convo = await Conversation.findById(conversationId).select('members');
+        if (convo && Array.isArray(convo.members)) {
+          for (const m of convo.members) {
+            const memberId = String(m._id || m);
+            if (memberId !== activeUser._id.toString()) {
+              io.to(`user:${memberId}`).except(roomFor(conversationId)).emit('typing_stop', stopPayload);
+            }
+          }
+        }
+      } catch {}
     });
 
     // --- Message Edit / Delete / React ---
