@@ -49,6 +49,7 @@ const routes = require('./routes');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { initSockets } = require('./sockets');
 const { expressCorsOrigin } = require('./utils/cors');
+const { migrateLegacyUsers } = require('./utils/migrateLegacyUsers');
 
 const app = express();
 
@@ -88,6 +89,10 @@ app.get('/api/health', (req, res) =>
     data: { status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() },
   }),
 );
+
+// Silence Chrome DevTools and browser automatic well-known probing
+app.get('/.well-known/*', (req, res) => res.status(204).end());
+
 app.use('/api', routes);
 app.use(notFoundHandler);
 app.use(errorHandler);
@@ -135,7 +140,8 @@ async function start() {
     minPoolSize: 10,
     serverSelectionTimeoutMS: 5000,
   });
-  console.log('[backend] MongoDB connected (maxPoolSize: 100, minPoolSize: 10)');
+  // Normalize any legacy database records
+  await migrateLegacyUsers();
 
   // Ensure admin user from .env exists and has admin authority
   await ensureAdminUser();
