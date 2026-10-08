@@ -707,6 +707,21 @@ function initSockets(httpServer) {
       if (typeof ack === 'function') ack({ success: true });
     });
 
+function broadcastCallSystemMessage(io, conversationId, text, eventType) {
+  try {
+    const payload = {
+      id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      conversationId: String(conversationId),
+      text,
+      event: eventType,
+      timestamp: Date.now(),
+    };
+    io.to(roomFor(conversationId)).emit('call:system_message', payload);
+  } catch (err) {
+    console.warn('[sockets] broadcastCallSystemMessage note:', err.message);
+  }
+}
+
     // --- Group WebRTC Calling Signaling Engine ---
     socket.on('call:group_get_active', async ({ conversationId } = {}, ack) => {
       try {
@@ -733,13 +748,17 @@ function initSockets(httpServer) {
 
         await messageService.assertMember(conversationId, activeUser._id);
 
-        const convo = await Conversation.findById(conversationId).select('name type privacy members createdBy admins');
+        const convo = await Conversation.findById(conversationId).select('name type privacy members createdBy admins memberRoles');
         if (!convo) throw new Error('Group not found');
 
         let call = activeGroupCalls.get(conversationId);
         if (call) {
-          // Add user to existing group call
-          call.participants.set(currentUserId, {
+          // Check if user is banned from this call
+          if (call.bannedUserIds && call.bannedUserIds.has(currentUserId)) {
+            throw new Error('You are banned from this call room');
+          }
+
+          const participantObj = {
             socketId: socket.id,
             user: {
               _id: currentUserId,
@@ -753,10 +772,38 @@ function initSockets(httpServer) {
             isVideoOff: false,
             isScreenSharing: false,
             joinedAt: Date.now(),
-          });
+          };
+
+          call.participants.set(currentUserId, participantObj);
           userActiveGroupCall.set(currentUserId, conversationId);
+
+          // Broadcast participant joined event with full details
+          socket.to(roomFor(conversationId)).emit('call:group_user_joined', {
+            conversationId,
+            user: participantObj.user,
+            participant: {
+              userId: currentUserId,
+              user: participantObj.user,
+              isMuted: false,
+              isVideoOff: false,
+              isScreenSharing: false,
+              joinedAt: participantObj.joinedAt,
+            },
+          });
+
+          // System message notification
+          broadcastCallSystemMessage(
+            io,
+            conversationId,
+            `${activeUser.displayName || activeUser.username} joined the call`,
+            'CALL_USER_JOINED',
+          );
+
           broadcastGroupCallState(io, conversationId);
-          if (typeof ack === 'function') ack({ success: true, callSession: serializeGroupCall(call) });
+
+          const serialized = serializeGroupCall(call);
+          socket.emit('call:group_room_state', { conversationId, activeCall: serialized });
+          if (typeof ack === 'function') ack({ success: true, callSession: serialized });
           return;
         }
 
@@ -794,6 +841,8 @@ function initSockets(httpServer) {
           },
           startedAt: Date.now(),
           participants: participantsMap,
+          bannedUserIds: new Set(),
+          activeBanVotes: new Map(),
         };
 
         activeGroupCalls.set(conversationId, call);
@@ -823,6 +872,13 @@ function initSockets(httpServer) {
           }
         }
 
+        broadcastCallSystemMessage(
+          io,
+          conversationId,
+          `${activeUser.displayName || activeUser.username} started the call`,
+          'CALL_USER_JOINED',
+        );
+
         broadcastGroupCallState(io, conversationId);
         if (typeof ack === 'function') ack({ success: true, callSession: serialized });
       } catch (err) {
@@ -842,6 +898,10 @@ function initSockets(httpServer) {
         let call = activeGroupCalls.get(String(conversationId));
         if (!call) {
           throw new Error('No active call in this room');
+        }
+
+        if (call.bannedUserIds && call.bannedUserIds.has(currentUserId)) {
+          throw new Error('You are banned from this call room');
         }
 
         const participantObj = {
@@ -877,13 +937,45 @@ function initSockets(httpServer) {
           },
         });
 
+        broadcastCallSystemMessage(
+          io,
+          conversationId,
+          `${activeUser.displayName || activeUser.username} joined the call`,
+          'CALL_USER_JOINED',
+        );
+
         broadcastGroupCallState(io, conversationId);
+
+        const serialized = serializeGroupCall(call);
+        socket.emit('call:group_room_state', { conversationId: String(conversationId), activeCall: serialized });
 
         if (typeof ack === 'function') {
           ack({
             success: true,
-            callSession: serializeGroupCall(call),
+            callSession: serialized,
           });
+        }
+      } catch (err) {
+        if (typeof ack === 'function') ack({ success: false, message: err.message });
+      }
+    });
+
+    socket.on('call:group_sync', async ({ conversationId } = {}, ack) => {
+      try {
+        if (!conversationId) throw new Error('conversationId required');
+        const activeUser = socket.data.user || user;
+        await messageService.assertMember(conversationId, activeUser._id);
+
+        const call = activeGroupCalls.get(String(conversationId));
+        const serialized = serializeGroupCall(call);
+
+        socket.emit('call:group_room_state', {
+          conversationId: String(conversationId),
+          activeCall: serialized,
+        });
+
+        if (typeof ack === 'function') {
+          ack({ success: true, activeCall: serialized });
         }
       } catch (err) {
         if (typeof ack === 'function') ack({ success: false, message: err.message });
@@ -953,10 +1045,18 @@ function initSockets(httpServer) {
         const call = activeGroupCalls.get(convoId);
         if (call) {
           call.participants.delete(currentUserId);
+
           io.to(roomFor(convoId)).emit('call:group_user_left', {
             conversationId: convoId,
             userId: currentUserId,
           });
+
+          broadcastCallSystemMessage(
+            io,
+            convoId,
+            `${activeUser.displayName || activeUser.username} left the call`,
+            'CALL_USER_LEFT',
+          );
 
           if (call.participants.size === 0) {
             activeGroupCalls.delete(convoId);
@@ -964,10 +1064,329 @@ function initSockets(httpServer) {
             io.to(roomFor(convoId)).emit('call:group_ended', {
               conversationId: convoId,
             });
+            broadcastCallSystemMessage(io, convoId, 'Call ended', 'CALL_ENDED');
           } else {
             broadcastGroupCallState(io, convoId);
           }
         }
+        if (typeof ack === 'function') ack({ success: true });
+      } catch (err) {
+        if (typeof ack === 'function') ack({ success: false, message: err.message });
+      }
+    });
+
+    // --- Admin Moderation: Remove User from Call ---
+    socket.on('call:group_remove_user', async ({ conversationId, targetUserId } = {}, ack) => {
+      try {
+        if (!conversationId || !targetUserId) throw new Error('conversationId and targetUserId required');
+        const activeUser = socket.data.user || user;
+        const currentUserId = activeUser._id.toString();
+        const tid = String(targetUserId);
+
+        const convo = await Conversation.findById(conversationId);
+        if (!convo) throw new Error('Conversation not found');
+        if (!convo.hasAdmin(activeUser._id)) {
+          throw new Error('Only room admins can remove participants');
+        }
+
+        const call = activeGroupCalls.get(String(conversationId));
+        if (!call || !call.participants.has(tid)) {
+          if (typeof ack === 'function') ack({ success: true, message: 'User not in call' });
+          return;
+        }
+
+        const targetParticipant = call.participants.get(tid);
+        const targetName = targetParticipant?.user?.displayName || targetParticipant?.user?.username || 'User';
+
+        call.participants.delete(tid);
+        userActiveGroupCall.delete(tid);
+
+        // Notify target directly to terminate call stage
+        io.to(`user:${tid}`).emit('call:group_user_removed', {
+          conversationId: String(conversationId),
+          reason: 'Removed from call by Admin',
+        });
+
+        // Notify room members
+        io.to(roomFor(conversationId)).emit('call:group_user_left', {
+          conversationId: String(conversationId),
+          userId: tid,
+          reason: 'REMOVED_BY_ADMIN',
+        });
+
+        broadcastCallSystemMessage(
+          io,
+          conversationId,
+          `${targetName} was removed from the call by Admin`,
+          'CALL_USER_REMOVED',
+        );
+
+        if (call.participants.size === 0) {
+          activeGroupCalls.delete(String(conversationId));
+          await logGroupCallMessage(io, call);
+          io.to(roomFor(conversationId)).emit('call:group_ended', {
+            conversationId: String(conversationId),
+          });
+        } else {
+          broadcastGroupCallState(io, conversationId);
+        }
+
+        if (typeof ack === 'function') ack({ success: true });
+      } catch (err) {
+        if (typeof ack === 'function') ack({ success: false, message: err.message });
+      }
+    });
+
+    // --- Admin Moderation: Ban User from Call ---
+    socket.on('call:group_ban_user', async ({ conversationId, targetUserId } = {}, ack) => {
+      try {
+        if (!conversationId || !targetUserId) throw new Error('conversationId and targetUserId required');
+        const activeUser = socket.data.user || user;
+        const tid = String(targetUserId);
+
+        const convo = await Conversation.findById(conversationId);
+        if (!convo) throw new Error('Conversation not found');
+        if (!convo.hasAdmin(activeUser._id)) {
+          throw new Error('Only room admins can ban participants');
+        }
+
+        const call = activeGroupCalls.get(String(conversationId));
+        if (!call) throw new Error('No active call in room');
+
+        call.bannedUserIds = call.bannedUserIds || new Set();
+        call.bannedUserIds.add(tid);
+
+        const targetParticipant = call.participants.get(tid);
+        const targetName = targetParticipant?.user?.displayName || targetParticipant?.user?.username || 'User';
+
+        if (call.participants.has(tid)) {
+          call.participants.delete(tid);
+          userActiveGroupCall.delete(tid);
+
+          // Terminate target call
+          io.to(`user:${tid}`).emit('call:group_user_banned', {
+            conversationId: String(conversationId),
+            reason: 'Banned from call by Admin',
+          });
+
+          // Notify room
+          io.to(roomFor(conversationId)).emit('call:group_user_left', {
+            conversationId: String(conversationId),
+            userId: tid,
+            reason: 'BANNED_BY_ADMIN',
+          });
+        }
+
+        broadcastCallSystemMessage(
+          io,
+          conversationId,
+          `${targetName} was banned from the call by Admin`,
+          'CALL_USER_BANNED',
+        );
+
+        if (call.participants.size === 0) {
+          activeGroupCalls.delete(String(conversationId));
+          await logGroupCallMessage(io, call);
+          io.to(roomFor(conversationId)).emit('call:group_ended', {
+            conversationId: String(conversationId),
+          });
+        } else {
+          broadcastGroupCallState(io, conversationId);
+        }
+
+        if (typeof ack === 'function') ack({ success: true });
+      } catch (err) {
+        if (typeof ack === 'function') ack({ success: false, message: err.message });
+      }
+    });
+
+    // --- Democratic Moderation: Start Majority Ban Vote ---
+    socket.on('call:group_vote_ban_start', async ({ conversationId, targetUserId } = {}, ack) => {
+      try {
+        if (!conversationId || !targetUserId) throw new Error('conversationId and targetUserId required');
+        const activeUser = socket.data.user || user;
+        const currentUserId = activeUser._id.toString();
+        const tid = String(targetUserId);
+
+        if (currentUserId === tid) throw new Error('Cannot vote to ban yourself');
+
+        const call = activeGroupCalls.get(String(conversationId));
+        if (!call || !call.participants.has(currentUserId) || !call.participants.has(tid)) {
+          throw new Error('Active call or participant not found');
+        }
+
+        const convo = await Conversation.findById(conversationId);
+        // Regular members cannot initiate ban vote against group owner/admins
+        if (convo && convo.hasAdmin(tid) && !convo.hasAdmin(currentUserId)) {
+          throw new Error('Cannot vote to ban room owner or admins');
+        }
+
+        call.activeBanVotes = call.activeBanVotes || new Map();
+        const targetParticipant = call.participants.get(tid);
+
+        const voteObj = {
+          conversationId: String(conversationId),
+          targetUserId: tid,
+          targetUser: targetParticipant.user,
+          initiatedBy: currentUserId,
+          initiatorName: activeUser.displayName || activeUser.username,
+          voters: new Set([currentUserId]),
+          startedAt: Date.now(),
+        };
+
+        call.activeBanVotes.set(tid, voteObj);
+
+        // Calculate eligible voters: all participants except target
+        const eligibleCount = Math.max(1, call.participants.size - 1);
+        const majorityNeeded = Math.floor(eligibleCount / 2) + 1;
+
+        if (voteObj.voters.size >= majorityNeeded) {
+          // Immediate majority reached (e.g. 2 participants total, 1 vote)
+          call.bannedUserIds = call.bannedUserIds || new Set();
+          call.bannedUserIds.add(tid);
+          call.participants.delete(tid);
+          call.activeBanVotes.delete(tid);
+          userActiveGroupCall.delete(tid);
+
+          const targetName = targetParticipant.user?.displayName || targetParticipant.user?.username || 'User';
+
+          io.to(`user:${tid}`).emit('call:group_user_banned', {
+            conversationId: String(conversationId),
+            reason: 'Banned by majority vote',
+          });
+
+          io.to(roomFor(conversationId)).emit('call:group_user_left', {
+            conversationId: String(conversationId),
+            userId: tid,
+            reason: 'BANNED_BY_VOTE',
+          });
+
+          io.to(roomFor(conversationId)).emit('call:group_ban_vote_approved', {
+            conversationId: String(conversationId),
+            targetUserId: tid,
+            targetUser: targetParticipant.user,
+          });
+
+          broadcastCallSystemMessage(
+            io,
+            conversationId,
+            `${targetName} was banned from the call by community vote`,
+            'CALL_USER_BANNED',
+          );
+
+          if (call.participants.size === 0) {
+            activeGroupCalls.delete(String(conversationId));
+            await logGroupCallMessage(io, call);
+            io.to(roomFor(conversationId)).emit('call:group_ended', {
+              conversationId: String(conversationId),
+            });
+          } else {
+            broadcastGroupCallState(io, conversationId);
+          }
+        } else {
+          // Broadcast ban vote started to all eligible room members
+          io.to(roomFor(conversationId)).emit('call:group_ban_vote_started', {
+            conversationId: String(conversationId),
+            targetUserId: tid,
+            targetUser: targetParticipant.user,
+            initiatedBy: currentUserId,
+            initiatorName: voteObj.initiatorName,
+            votesCount: voteObj.voters.size,
+            majorityNeeded,
+            eligibleVoters: eligibleCount,
+          });
+        }
+
+        if (typeof ack === 'function') ack({ success: true });
+      } catch (err) {
+        if (typeof ack === 'function') ack({ success: false, message: err.message });
+      }
+    });
+
+    // --- Democratic Moderation: Cast Ban Vote ---
+    socket.on('call:group_vote_ban_cast', async ({ conversationId, targetUserId, vote = true } = {}, ack) => {
+      try {
+        if (!conversationId || !targetUserId) throw new Error('conversationId and targetUserId required');
+        const activeUser = socket.data.user || user;
+        const currentUserId = activeUser._id.toString();
+        const tid = String(targetUserId);
+
+        const call = activeGroupCalls.get(String(conversationId));
+        if (!call || !call.participants.has(currentUserId)) {
+          throw new Error('Call not active or not a participant');
+        }
+
+        const voteObj = call.activeBanVotes ? call.activeBanVotes.get(tid) : null;
+        if (!voteObj) {
+          throw new Error('No active ban vote for this user');
+        }
+
+        if (currentUserId === tid) {
+          throw new Error('Target user cannot vote on their own ban');
+        }
+
+        if (vote) {
+          voteObj.voters.add(currentUserId);
+        }
+
+        // Recalculate dynamic majority threshold
+        const eligibleCount = Math.max(1, call.participants.size - 1);
+        const majorityNeeded = Math.floor(eligibleCount / 2) + 1;
+
+        if (voteObj.voters.size >= majorityNeeded) {
+          // Ban approved!
+          call.bannedUserIds = call.bannedUserIds || new Set();
+          call.bannedUserIds.add(tid);
+          const targetParticipant = call.participants.get(tid);
+          call.participants.delete(tid);
+          call.activeBanVotes.delete(tid);
+          userActiveGroupCall.delete(tid);
+
+          const targetName = targetParticipant?.user?.displayName || targetParticipant?.user?.username || 'User';
+
+          io.to(`user:${tid}`).emit('call:group_user_banned', {
+            conversationId: String(conversationId),
+            reason: 'Banned by majority vote',
+          });
+
+          io.to(roomFor(conversationId)).emit('call:group_user_left', {
+            conversationId: String(conversationId),
+            userId: tid,
+            reason: 'BANNED_BY_VOTE',
+          });
+
+          io.to(roomFor(conversationId)).emit('call:group_ban_vote_approved', {
+            conversationId: String(conversationId),
+            targetUserId: tid,
+            targetUser: targetParticipant?.user,
+          });
+
+          broadcastCallSystemMessage(
+            io,
+            conversationId,
+            `${targetName} was banned from the call by community vote`,
+            'CALL_USER_BANNED',
+          );
+
+          if (call.participants.size === 0) {
+            activeGroupCalls.delete(String(conversationId));
+            await logGroupCallMessage(io, call);
+            io.to(roomFor(conversationId)).emit('call:group_ended', {
+              conversationId: String(conversationId),
+            });
+          } else {
+            broadcastGroupCallState(io, conversationId);
+          }
+        } else {
+          io.to(roomFor(conversationId)).emit('call:group_ban_vote_updated', {
+            conversationId: String(conversationId),
+            targetUserId: tid,
+            votesCount: voteObj.voters.size,
+            majorityNeeded,
+            eligibleVoters: eligibleCount,
+          });
+        }
+
         if (typeof ack === 'function') ack({ success: true });
       } catch (err) {
         if (typeof ack === 'function') ack({ success: false, message: err.message });
