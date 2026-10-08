@@ -28,14 +28,8 @@ services:
       - key: ADMIN_PASSWORD
         sync: false
       - key: EMAIL_FROM
-        sync: false
-      - key: SMTP_HOST
-        value: smtp.gmail.com
-      - key: SMTP_PORT
-        value: 465
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASS
+        value: PixelTalk <skgamerpro123@gmail.com>
+      - key: BREVO_API_KEY
         sync: false
       - key: CLOUDINARY_CLOUD_NAME
         sync: false
