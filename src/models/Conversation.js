@@ -96,6 +96,7 @@ const conversationSchema = new mongoose.Schema(
       managePasscode: { type: Boolean, default: false },
     },
     privacy: { type: String, enum: ['public', 'private', 'invite'], default: 'public' },
+    hasPasscode: { type: Boolean, default: false },
     passcodeHash: { type: String, select: false },
     deletedAt: { type: Date, default: null },
   },

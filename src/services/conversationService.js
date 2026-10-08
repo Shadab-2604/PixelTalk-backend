@@ -173,7 +173,9 @@ async function getByIdForUser(conversationId, userId) {
       name: convo.name,
       description: convo.description,
       avatarId: convo.avatarId,
+      avatarUrl: convo.avatarUrl,
       privacy: convo.privacy,
+      hasPasscode: Boolean(convo.hasPasscode || convo.privacy === 'private'),
       memberCount: (convo.members || []).length,
       createdBy: convo.createdBy,
       createdAt: convo.createdAt,
@@ -184,6 +186,7 @@ async function getByIdForUser(conversationId, userId) {
   const obj = convo.toJSON ? convo.toJSON() : convo;
   return {
     ...obj,
+    hasPasscode: Boolean(convo.hasPasscode || convo.privacy === 'private'),
     isMember: true,
     myRole: convo.getMemberRole(userId),
   };
@@ -210,7 +213,9 @@ async function searchRooms(q, limit) {
     name: r.name,
     description: r.description,
     avatarId: r.avatarId,
+    avatarUrl: r.avatarUrl,
     privacy: r.privacy,
+    hasPasscode: Boolean(r.hasPasscode || r.privacy === 'private'),
     memberCount: (r.members || []).length,
     members: r.members,
     createdBy: r.createdBy,
@@ -306,7 +311,8 @@ async function createGroup(creator, { name, description, avatarId, avatarUrl, av
     admins: [creator._id],
     memberRoles: [{ userId: creator._id, role: 'Owner' }],
     createdBy: creator._id,
-    privacy: privacy === 'private' ? 'private' : 'public',
+    privacy: ['private', 'invite', 'public'].includes(privacy) ? privacy : 'public',
+    hasPasscode: false,
     settings: {
       adminOnlyChat: Boolean(settings?.adminOnlyChat),
       invitePermission: settings?.invitePermission === 'ADMINS_ONLY' ? 'ADMINS_ONLY' : 'ANY_MEMBER',
@@ -323,11 +329,15 @@ async function createGroup(creator, { name, description, avatarId, avatarUrl, av
     },
   });
 
-  if (passcode !== undefined && passcode !== null && String(passcode).trim() !== '') {
+  if (privacy === 'private' || (passcode !== undefined && passcode !== null && String(passcode).trim() !== '')) {
     const pass = requireString(passcode, 'Passcode', { min: 4, max: 64 });
     convo.privacy = 'private';
+    convo.hasPasscode = true;
     const saltRounds = 10;
     convo.passcodeHash = await bcrypt.hash(pass, saltRounds);
+  } else {
+    convo.hasPasscode = false;
+    convo.passcodeHash = null;
   }
 
   await convo.save();
@@ -404,14 +414,24 @@ async function updateSettings(actorId, conversationId, body) {
 
   if (body.privacy !== undefined && ['public', 'private', 'invite'].includes(body.privacy)) {
     updates.privacy = body.privacy;
+    if (body.privacy !== 'private' && (body.passcode === undefined || body.passcode === '' || body.passcode === null)) {
+      updates.passcodeHash = null;
+      updates.hasPasscode = false;
+    }
   }
 
   if (body.passcode !== undefined) {
     if (body.passcode === '' || body.passcode === null) {
       updates.passcodeHash = null;
+      updates.hasPasscode = false;
+      if (updates.privacy === 'private' || (!updates.privacy && convo.privacy === 'private')) {
+        updates.privacy = body.privacy && ['public', 'invite'].includes(body.privacy) ? body.privacy : 'public';
+      }
     } else {
       const pass = requireString(body.passcode, 'Passcode', { min: 4, max: 64 });
       updates.passcodeHash = await bcrypt.hash(pass, 10);
+      updates.privacy = 'private';
+      updates.hasPasscode = true;
     }
   }
 
