@@ -34,9 +34,13 @@ const User = require('../models/User');
 const { socketCorsOrigin } = require('../utils/cors');
 
 const onlineUsers = new Map(); // userId -> Set<socketId>
-const activeCalls = new Map(); // callId -> callSession
-const userActiveCall = new Map(); // userId -> callId
+const activeCalls = new Map(); // callId -> callSession (1-to-1)
+const userActiveCall = new Map(); // userId -> callId (1-to-1)
 const lastCallInitiated = new Map(); // userId -> timestamp
+
+// Group Call State Engine
+const activeGroupCalls = new Map(); // conversationId -> groupCallSession
+const userActiveGroupCall = new Map(); // userId -> conversationId
 
 function cleanupCall(callId) {
   if (!callId) return;
@@ -50,6 +54,39 @@ function cleanupCall(callId) {
       if (cId === callId) userActiveCall.delete(uid);
     }
   }
+}
+
+function serializeGroupCall(call) {
+  if (!call) return null;
+  const participantsArr = Array.from(call.participants.values()).map((p) => ({
+    userId: String(p.user?._id || p.user?.id),
+    user: p.user,
+    isMuted: !!p.isMuted,
+    isVideoOff: !!p.isVideoOff,
+    isScreenSharing: !!p.isScreenSharing,
+    joinedAt: p.joinedAt,
+  }));
+  return {
+    callId: call.id,
+    id: call.id,
+    conversationId: String(call.conversationId),
+    callType: call.callType,
+    type: call.callType,
+    initiatorId: String(call.initiatorId),
+    initiator: call.initiator,
+    startedAt: call.startedAt,
+    participantCount: participantsArr.length,
+    participants: participantsArr,
+  };
+}
+
+function broadcastGroupCallState(io, conversationId) {
+  const call = activeGroupCalls.get(String(conversationId));
+  const serialized = serializeGroupCall(call);
+  io.to(roomFor(conversationId)).emit('call:group_active_state', {
+    conversationId: String(conversationId),
+    activeCall: serialized,
+  });
 }
 
 function roomFor(conversationId) {
@@ -124,6 +161,44 @@ async function logCallMessage(io, call, status) {
     io.to(`user:${call.receiverId}`).emit('new_message', eventPayload);
   } catch (err) {
     console.warn('[sockets] Call message log note:', err.message);
+  }
+}
+
+async function logGroupCallMessage(io, call) {
+  try {
+    if (!call || !call.conversationId) return;
+    const isVideo = call.callType === 'video' || call.type === 'video';
+    const durSec = Math.max(1, Math.round((Date.now() - call.startedAt) / 1000));
+    const m = Math.floor(durSec / 60);
+    const s = durSec % 60;
+    const durStr = m > 0 ? `${m}m ${s}s` : `${s}s`;
+    const content = isVideo ? `📹 Group video call • ${durStr}` : `📞 Group voice call • ${durStr}`;
+
+    const msg = await Message.create({
+      conversationId: call.conversationId,
+      senderId: call.initiatorId,
+      content,
+      messageType: 'text',
+      status: 'sent',
+    });
+
+    await Conversation.findByIdAndUpdate(call.conversationId, {
+      lastMessageAt: msg.createdAt,
+      updatedAt: msg.createdAt,
+    });
+
+    const populatedMsg = await Message.findById(msg._id)
+      .populate('senderId', 'username displayName avatarId avatarUrl')
+      .lean();
+
+    const eventPayload = {
+      message: populatedMsg,
+      conversationId: call.conversationId,
+    };
+
+    io.to(roomFor(call.conversationId)).emit('new_message', eventPayload);
+  } catch (err) {
+    console.warn('[sockets] Group call message log notice:', err.message);
   }
 }
 
@@ -632,11 +707,278 @@ function initSockets(httpServer) {
       if (typeof ack === 'function') ack({ success: true });
     });
 
+    // --- Group WebRTC Calling Signaling Engine ---
+    socket.on('call:group_get_active', async ({ conversationId } = {}, ack) => {
+      try {
+        if (!conversationId) throw new Error('conversationId required');
+        const activeUser = socket.data.user || user;
+        await messageService.assertMember(conversationId, activeUser._id);
+        const call = activeGroupCalls.get(String(conversationId));
+        if (typeof ack === 'function') {
+          ack({ success: true, activeCall: serializeGroupCall(call) });
+        }
+      } catch (err) {
+        if (typeof ack === 'function') ack({ success: false, message: err.message });
+      }
+    });
+
+    socket.on('call:group_start', async (payload = {}, ack) => {
+      try {
+        const activeUser = socket.data.user || user;
+        const currentUserId = activeUser._id.toString();
+        const conversationId = String(payload.conversationId || '');
+        const callType = payload.callType || payload.type || 'audio';
+
+        if (!conversationId) throw new Error('conversationId required');
+
+        await messageService.assertMember(conversationId, activeUser._id);
+
+        const convo = await Conversation.findById(conversationId).select('name type privacy members createdBy admins');
+        if (!convo) throw new Error('Group not found');
+
+        let call = activeGroupCalls.get(conversationId);
+        if (call) {
+          // Add user to existing group call
+          call.participants.set(currentUserId, {
+            socketId: socket.id,
+            user: {
+              _id: currentUserId,
+              id: currentUserId,
+              username: activeUser.username,
+              displayName: activeUser.displayName,
+              avatarId: activeUser.avatarId,
+              avatarUrl: activeUser.avatarUrl || '',
+            },
+            isMuted: false,
+            isVideoOff: false,
+            isScreenSharing: false,
+            joinedAt: Date.now(),
+          });
+          userActiveGroupCall.set(currentUserId, conversationId);
+          broadcastGroupCallState(io, conversationId);
+          if (typeof ack === 'function') ack({ success: true, callSession: serializeGroupCall(call) });
+          return;
+        }
+
+        const groupCallId = `grpcall_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const participantsMap = new Map();
+        participantsMap.set(currentUserId, {
+          socketId: socket.id,
+          user: {
+            _id: currentUserId,
+            id: currentUserId,
+            username: activeUser.username,
+            displayName: activeUser.displayName,
+            avatarId: activeUser.avatarId,
+            avatarUrl: activeUser.avatarUrl || '',
+          },
+          isMuted: false,
+          isVideoOff: false,
+          isScreenSharing: false,
+          joinedAt: Date.now(),
+        });
+
+        call = {
+          id: groupCallId,
+          callId: groupCallId,
+          conversationId,
+          callType: callType === 'video' ? 'video' : 'audio',
+          initiatorId: currentUserId,
+          initiator: {
+            _id: currentUserId,
+            id: currentUserId,
+            username: activeUser.username,
+            displayName: activeUser.displayName,
+            avatarId: activeUser.avatarId,
+            avatarUrl: activeUser.avatarUrl || '',
+          },
+          startedAt: Date.now(),
+          participants: participantsMap,
+        };
+
+        activeGroupCalls.set(conversationId, call);
+        userActiveGroupCall.set(currentUserId, conversationId);
+
+        const serialized = serializeGroupCall(call);
+
+        // Broadcast to group room and personal rooms of group members
+        io.to(roomFor(conversationId)).emit('call:group_started', {
+          conversationId,
+          activeCall: serialized,
+          callSession: serialized,
+          conversationName: convo.name || 'Group',
+        });
+
+        if (Array.isArray(convo.members)) {
+          for (const m of convo.members) {
+            const memberId = String(m._id || m);
+            if (memberId !== currentUserId) {
+              io.to(`user:${memberId}`).except(roomFor(conversationId)).emit('call:group_started', {
+                conversationId,
+                activeCall: serialized,
+                callSession: serialized,
+                conversationName: convo.name || 'Group',
+              });
+            }
+          }
+        }
+
+        broadcastGroupCallState(io, conversationId);
+        if (typeof ack === 'function') ack({ success: true, callSession: serialized });
+      } catch (err) {
+        if (typeof ack === 'function') ack({ success: false, message: err.message });
+        else socket.emit('call:failed', { message: err.message });
+      }
+    });
+
+    socket.on('call:group_join', async ({ conversationId } = {}, ack) => {
+      try {
+        if (!conversationId) throw new Error('conversationId required');
+        const activeUser = socket.data.user || user;
+        const currentUserId = activeUser._id.toString();
+
+        await messageService.assertMember(conversationId, activeUser._id);
+
+        let call = activeGroupCalls.get(String(conversationId));
+        if (!call) {
+          throw new Error('No active call in this room');
+        }
+
+        const participantObj = {
+          socketId: socket.id,
+          user: {
+            _id: currentUserId,
+            id: currentUserId,
+            username: activeUser.username,
+            displayName: activeUser.displayName,
+            avatarId: activeUser.avatarId,
+            avatarUrl: activeUser.avatarUrl || '',
+          },
+          isMuted: false,
+          isVideoOff: false,
+          isScreenSharing: false,
+          joinedAt: Date.now(),
+        };
+
+        call.participants.set(currentUserId, participantObj);
+        userActiveGroupCall.set(currentUserId, String(conversationId));
+
+        // Notify other participants that someone joined
+        socket.to(roomFor(conversationId)).emit('call:group_user_joined', {
+          conversationId: String(conversationId),
+          user: participantObj.user,
+          participant: {
+            userId: currentUserId,
+            user: participantObj.user,
+            isMuted: false,
+            isVideoOff: false,
+            isScreenSharing: false,
+            joinedAt: participantObj.joinedAt,
+          },
+        });
+
+        broadcastGroupCallState(io, conversationId);
+
+        if (typeof ack === 'function') {
+          ack({
+            success: true,
+            callSession: serializeGroupCall(call),
+          });
+        }
+      } catch (err) {
+        if (typeof ack === 'function') ack({ success: false, message: err.message });
+      }
+    });
+
+    socket.on('call:group_signal', async (payload = {}) => {
+      try {
+        const activeUser = socket.data.user || user;
+        const currentUserId = activeUser._id.toString();
+        const { conversationId, targetUserId, signal } = payload;
+        if (!conversationId || !targetUserId || !signal) return;
+
+        const call = activeGroupCalls.get(String(conversationId));
+        if (!call || !call.participants.has(currentUserId) || !call.participants.has(String(targetUserId))) {
+          return;
+        }
+
+        io.to(`user:${targetUserId}`).emit('call:group_signal', {
+          conversationId: String(conversationId),
+          fromUserId: currentUserId,
+          signal,
+        });
+      } catch (err) {
+        console.warn('[sockets] group_signal error:', err.message);
+      }
+    });
+
+    socket.on('call:group_media_state', async (payload = {}) => {
+      try {
+        const activeUser = socket.data.user || user;
+        const currentUserId = activeUser._id.toString();
+        const { conversationId, isMuted, isVideoOff, isScreenSharing } = payload;
+        if (!conversationId) return;
+
+        const call = activeGroupCalls.get(String(conversationId));
+        if (call && call.participants.has(currentUserId)) {
+          const p = call.participants.get(currentUserId);
+          if (isMuted !== undefined) p.isMuted = !!isMuted;
+          if (isVideoOff !== undefined) p.isVideoOff = !!isVideoOff;
+          if (isScreenSharing !== undefined) p.isScreenSharing = !!isScreenSharing;
+
+          socket.to(roomFor(conversationId)).emit('call:group_media_state', {
+            conversationId: String(conversationId),
+            fromUserId: currentUserId,
+            isMuted: p.isMuted,
+            isVideoOff: p.isVideoOff,
+            isScreenSharing: p.isScreenSharing,
+          });
+        }
+      } catch (err) {
+        console.warn('[sockets] group_media_state error:', err.message);
+      }
+    });
+
+    socket.on('call:group_leave', async ({ conversationId } = {}, ack) => {
+      try {
+        const activeUser = socket.data.user || user;
+        const currentUserId = activeUser._id.toString();
+        const convoId = String(conversationId || userActiveGroupCall.get(currentUserId) || '');
+        if (!convoId) {
+          if (typeof ack === 'function') ack({ success: true });
+          return;
+        }
+
+        userActiveGroupCall.delete(currentUserId);
+        const call = activeGroupCalls.get(convoId);
+        if (call) {
+          call.participants.delete(currentUserId);
+          io.to(roomFor(convoId)).emit('call:group_user_left', {
+            conversationId: convoId,
+            userId: currentUserId,
+          });
+
+          if (call.participants.size === 0) {
+            activeGroupCalls.delete(convoId);
+            await logGroupCallMessage(io, call);
+            io.to(roomFor(convoId)).emit('call:group_ended', {
+              conversationId: convoId,
+            });
+          } else {
+            broadcastGroupCallState(io, convoId);
+          }
+        }
+        if (typeof ack === 'function') ack({ success: true });
+      } catch (err) {
+        if (typeof ack === 'function') ack({ success: false, message: err.message });
+      }
+    });
+
     // --- Disconnect / Presence ---
     socket.on('disconnect', async () => {
       const currentUserId = (socket.data.user || user)._id.toString();
 
-      // Clean up active call if disconnected mid-call
+      // Clean up 1-to-1 active call if disconnected mid-call
       const currentCallId = userActiveCall.get(currentUserId);
       if (currentCallId) {
         const call = activeCalls.get(currentCallId);
@@ -648,6 +990,29 @@ function initSockets(httpServer) {
             by: currentUserId,
             reason: 'DISCONNECTED',
           });
+        }
+      }
+
+      // Clean up active group call participation if disconnected mid-call
+      const currentGroupConvoId = userActiveGroupCall.get(currentUserId);
+      if (currentGroupConvoId) {
+        userActiveGroupCall.delete(currentUserId);
+        const gCall = activeGroupCalls.get(currentGroupConvoId);
+        if (gCall) {
+          gCall.participants.delete(currentUserId);
+          io.to(roomFor(currentGroupConvoId)).emit('call:group_user_left', {
+            conversationId: currentGroupConvoId,
+            userId: currentUserId,
+          });
+          if (gCall.participants.size === 0) {
+            activeGroupCalls.delete(currentGroupConvoId);
+            await logGroupCallMessage(io, gCall);
+            io.to(roomFor(currentGroupConvoId)).emit('call:group_ended', {
+              conversationId: currentGroupConvoId,
+            });
+          } else {
+            broadcastGroupCallState(io, currentGroupConvoId);
+          }
         }
       }
 
