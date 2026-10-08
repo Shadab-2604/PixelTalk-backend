@@ -603,6 +603,21 @@ function initSockets(httpServer) {
       });
     });
 
+    socket.on('call:media_state', (payload = {}) => {
+      const activeUser = socket.data.user || user;
+      const currentUserId = activeUser._id.toString();
+      const { callId, isVideoOff, isMuted } = payload;
+      const targetUserId = String(payload.targetUserId || payload.toUserId || '');
+      if (!targetUserId) return;
+
+      io.to(`user:${targetUserId}`).emit('call:media_state', {
+        callId,
+        fromUserId: currentUserId,
+        isVideoOff: !!isVideoOff,
+        isMuted: !!isMuted,
+      });
+    });
+
     socket.on('call:end', async ({ callId } = {}, ack) => {
       const activeUser = socket.data.user || user;
       const currentUserId = activeUser._id.toString();
