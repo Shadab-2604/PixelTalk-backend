@@ -23,19 +23,23 @@ function isOriginAllowed(origin) {
   // Allow requests with no origin (e.g. mobile apps, curl, server-to-server)
   if (!origin) return true;
 
-  const normalized = origin.replace(/\/+$/, '');
-  if (allowedOrigins.includes(normalized) || allowedOrigins.includes('*')) {
+  const normalized = origin.replace(/\/+$/, '').toLowerCase();
+  if (allowedOrigins.some((ao) => ao.toLowerCase() === normalized) || allowedOrigins.includes('*')) {
     return true;
   }
 
-  // Support Vercel preview deployments (*.vercel.app) if any vercel.app domain is configured
-  const hasVercelInConfig = allowedOrigins.some((url) => url.includes('vercel.app'));
-  if (hasVercelInConfig && (normalized.endsWith('.vercel.app') || normalized.startsWith('https://pixel-talk'))) {
+  // Support all Vercel deployments (*.vercel.app) and PixelTalk domains
+  if (normalized.endsWith('.vercel.app') || normalized.includes('pixel-talk') || normalized.includes('pixeltalk')) {
     return true;
   }
 
-  // In non-production, allow localhost and loopback origins
-  if (!config.isProd && (normalized.includes('localhost') || normalized.includes('127.0.0.1'))) {
+  // Support Render hosting domains (*.onrender.com)
+  if (normalized.endsWith('.onrender.com')) {
+    return true;
+  }
+
+  // Allow localhost and local IP origins for testing
+  if (normalized.includes('localhost') || normalized.includes('127.0.0.1') || normalized.startsWith('http://192.168.')) {
     return true;
   }
 
