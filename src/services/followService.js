@@ -60,7 +60,34 @@ async function followUser(followerId, targetUserId, io = null) {
     });
   }
 
-  // Socket notification
+  // Socket notification & persistent Notification Center entry
+  const notificationService = require('./notificationService');
+  if (isPrivate) {
+    notificationService.createNotification({
+      recipientId: targetUserId,
+      actorId: followerId,
+      type: 'follow_request',
+      category: 'social',
+      title: 'Follow Request',
+      body: `${followerUser?.displayName || followerUser?.username || 'Someone'} sent you a follow request.`,
+      targetType: 'profile',
+      targetId: String(followerId),
+      io,
+    }).catch(() => {});
+  } else {
+    notificationService.createNotification({
+      recipientId: targetUserId,
+      actorId: followerId,
+      type: 'new_follower',
+      category: 'social',
+      title: 'New Follower',
+      body: `${followerUser?.displayName || followerUser?.username || 'Someone'} started following you.`,
+      targetType: 'profile',
+      targetId: String(followerId),
+      io,
+    }).catch(() => {});
+  }
+
   if (io) {
     if (isPrivate) {
       io.to(`user:${targetUserId}`).emit('follow_requested', {
@@ -135,6 +162,21 @@ async function respondFollowRequest(targetUserId, followerId, action, io = null)
 
   if (io) {
     const owner = await User.findById(targetUserId).select('username displayName avatarId');
+    if (normAction === 'ACCEPT') {
+      const notificationService = require('./notificationService');
+      notificationService.createNotification({
+        recipientId: followerId,
+        actorId: targetUserId,
+        type: 'follow_accepted',
+        category: 'social',
+        title: 'Follow Request Accepted',
+        body: `${owner?.displayName || owner?.username || 'User'} accepted your follow request.`,
+        targetType: 'profile',
+        targetId: String(targetUserId),
+        io,
+      }).catch(() => {});
+    }
+
     io.to(`user:${followerId}`).emit('follow_responded', {
       targetUser: {
         _id: owner._id,

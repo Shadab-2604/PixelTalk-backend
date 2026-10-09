@@ -159,6 +159,24 @@ async function logCallMessage(io, call, status) {
     io.to(roomFor(call.conversationId)).emit('new_message', eventPayload);
     io.to(`user:${call.callerId}`).emit('new_message', eventPayload);
     io.to(`user:${call.receiverId}`).emit('new_message', eventPayload);
+
+    if ((status === 'missed' || status === 'rejected' || status === 'cancelled') && !call.connectedAt) {
+      const notificationService = require('../services/notificationService');
+      notificationService.createNotification({
+        recipientId: call.receiverId,
+        actorId: call.callerId,
+        type: 'call_missed',
+        category: 'calls',
+        title: 'Missed Call',
+        body: `Missed ${call.callType || 'voice'} call from ${call.caller?.displayName || call.caller?.username || 'User'}`,
+        targetType: 'conversation',
+        targetId: String(call.conversationId),
+        data: {
+          callType: call.callType || 'voice',
+        },
+        io,
+      }).catch(() => {});
+    }
   } catch (err) {
     console.warn('[sockets] Call message log note:', err.message);
   }
@@ -242,6 +260,22 @@ function initSockets(httpServer) {
   async function setupUserSocket(socket, user) {
     if (!user || !user._id) return;
     const userId = user._id.toString();
+    const prevUserId = socket.data.currentAuthedUserId;
+
+    // If socket re-authenticates to a different user, cleanly leave previous user room and presence
+    if (prevUserId && prevUserId !== userId) {
+      socket.leave(`user:${prevUserId}`);
+      const prevSet = onlineUsers.get(prevUserId);
+      if (prevSet) {
+        prevSet.delete(socket.id);
+        if (prevSet.size === 0) {
+          onlineUsers.delete(prevUserId);
+          await setPresence(io, prevUserId, 'offline');
+          io.emit('user_offline', { userId: prevUserId, lastSeen: new Date().toISOString() });
+        }
+      }
+    }
+    socket.data.currentAuthedUserId = userId;
 
     // Join personal user room
     socket.join(`user:${userId}`);
@@ -341,11 +375,31 @@ function initSockets(httpServer) {
         // Broadcast to active chat room
         io.to(roomFor(conversationId)).emit('new_message', eventData);
 
-        // Broadcast to offline/background members' personal rooms
+        // Broadcast to offline/background members' personal rooms & create persistent notification
         if (convo && Array.isArray(convo.members)) {
+          const notificationService = require('../services/notificationService');
+          const isDirect = convo.type === 'direct';
           for (const m of convo.members) {
             const memberId = String(m._id || m);
-            io.to(`user:${memberId}`).except(roomFor(conversationId)).emit('new_message', eventData);
+            if (memberId !== String(currentUserId)) {
+              io.to(`user:${memberId}`).except(roomFor(conversationId)).emit('new_message', eventData);
+
+              notificationService.createNotification({
+                recipientId: memberId,
+                actorId: currentUserId,
+                type: isDirect ? 'message_direct' : 'message_group',
+                category: 'messages',
+                title: isDirect ? (activeUser.displayName || activeUser.username || 'Direct Message') : `#${convo.name || 'group'}`,
+                body: messagePreview,
+                targetType: 'conversation',
+                targetId: String(conversationId),
+                data: {
+                  messageId: String(message._id),
+                  conversationId: String(conversationId),
+                },
+                io,
+              }).catch(() => {});
+            }
           }
         }
 
@@ -859,6 +913,7 @@ function broadcastCallSystemMessage(io, conversationId, text, eventType) {
         });
 
         if (Array.isArray(convo.members)) {
+          const notificationService = require('../services/notificationService');
           for (const m of convo.members) {
             const memberId = String(m._id || m);
             if (memberId !== currentUserId) {
@@ -868,6 +923,21 @@ function broadcastCallSystemMessage(io, conversationId, text, eventType) {
                 callSession: serialized,
                 conversationName: convo.name || 'Group',
               });
+
+              notificationService.createNotification({
+                recipientId: memberId,
+                actorId: currentUserId,
+                type: 'group_call_started',
+                category: 'groups',
+                title: 'Group Call Started',
+                body: `${activeUser.displayName || activeUser.username} started a group call in #${convo.name || 'group'}`,
+                targetType: 'conversation',
+                targetId: String(conversationId),
+                data: {
+                  callType: callType === 'video' ? 'video' : 'audio',
+                },
+                io,
+              }).catch(() => {});
             }
           }
         }

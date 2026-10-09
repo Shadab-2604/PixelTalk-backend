@@ -169,15 +169,35 @@ async function addMembers(req, res, next) {
 
     // Realtime notifications for invited players
     const io = req.app.get('io');
-    if (io && Array.isArray(invitations)) {
+    const notificationService = require('../services/notificationService');
+    if (Array.isArray(invitations)) {
       for (const inv of invitations) {
         const invitedId = String(inv.invitedUserId?._id || inv.invitedUserId);
-        io.to(`user:${invitedId}`).emit('group_invitation_received', {
-          invitation: inv,
-          conversation: inv.conversationId,
-          inviter: inv.inviterId,
-          message: `${inv.inviterId?.displayName || inv.inviterId?.username || 'A player'} invited you to join #${inv.conversationId?.name || 'group'}`,
-        });
+        const inviterName = inv.inviterId?.displayName || inv.inviterId?.username || 'A player';
+        const groupName = inv.conversationId?.name || 'group';
+        notificationService.createNotification({
+          recipientId: invitedId,
+          actorId: inv.inviterId?._id || inv.inviterId || req.user._id,
+          type: 'group_invitation',
+          category: 'groups',
+          title: 'Group Invitation',
+          body: `${inviterName} invited you to join #${groupName}`,
+          targetType: 'group',
+          targetId: String(inv.conversationId?._id || inv.conversationId),
+          data: {
+            invitationId: String(inv._id),
+          },
+          io,
+        }).catch(() => {});
+
+        if (io) {
+          io.to(`user:${invitedId}`).emit('group_invitation_received', {
+            invitation: inv,
+            conversation: inv.conversationId,
+            inviter: inv.inviterId,
+            message: `${inviterName} invited you to join #${groupName}`,
+          });
+        }
       }
     }
 
@@ -193,15 +213,35 @@ async function invite(req, res, next) {
     const { invitations, errors, conversation } = await conversationService.inviteMembers(req.user._id, req.params.id, userIds);
 
     const io = req.app.get('io');
-    if (io && Array.isArray(invitations)) {
+    const notificationService = require('../services/notificationService');
+    if (Array.isArray(invitations)) {
       for (const inv of invitations) {
         const invitedId = String(inv.invitedUserId?._id || inv.invitedUserId);
-        io.to(`user:${invitedId}`).emit('group_invitation_received', {
-          invitation: inv,
-          conversation: inv.conversationId,
-          inviter: inv.inviterId,
-          message: `${inv.inviterId?.displayName || inv.inviterId?.username || 'A player'} invited you to join #${inv.conversationId?.name || 'group'}`,
-        });
+        const inviterName = inv.inviterId?.displayName || inv.inviterId?.username || 'A player';
+        const groupName = inv.conversationId?.name || conversation?.name || 'group';
+        notificationService.createNotification({
+          recipientId: invitedId,
+          actorId: inv.inviterId?._id || inv.inviterId || req.user._id,
+          type: 'group_invitation',
+          category: 'groups',
+          title: 'Group Invitation',
+          body: `${inviterName} invited you to join #${groupName}`,
+          targetType: 'group',
+          targetId: String(inv.conversationId?._id || inv.conversationId || req.params.id),
+          data: {
+            invitationId: String(inv._id),
+          },
+          io,
+        }).catch(() => {});
+
+        if (io) {
+          io.to(`user:${invitedId}`).emit('group_invitation_received', {
+            invitation: inv,
+            conversation: inv.conversationId,
+            inviter: inv.inviterId,
+            message: `${inviterName} invited you to join #${groupName}`,
+          });
+        }
       }
     }
 

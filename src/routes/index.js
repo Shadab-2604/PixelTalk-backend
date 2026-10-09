@@ -32,6 +32,7 @@ const messages = require('../controllers/messageController');
 const admin = require('../controllers/adminController');
 const follow = require('../controllers/followController');
 const chatSections = require('../controllers/chatSectionController');
+const notifications = require('../controllers/notificationController');
 const { requireAuth, optionalAuth, requireAdmin } = require('../middleware/auth');
 const { uploadAvatar, uploadBanner, uploadMedia } = require('../middleware/upload');
 const { asyncHandler, ApiError } = require('../utils/apiResponse');
@@ -92,6 +93,13 @@ router.get('/users/:id/followers', requireAuth, asyncHandler(follow.getFollowers
 router.get('/users/:id/following', requireAuth, asyncHandler(follow.getFollowing));
 router.get('/users/by-username/:username', requireAuth, asyncHandler(users.getUserByUsername));
 router.get('/users/:id', requireAuth, asyncHandler(users.getUser));
+
+// ---------------- Notifications ----------------
+router.get('/notifications', requireAuth, apiLimiter, asyncHandler(notifications.list));
+router.get('/notifications/unread-count', requireAuth, apiLimiter, asyncHandler(notifications.getUnreadCount));
+router.patch('/notifications/:id/read', requireAuth, asyncHandler(notifications.markRead));
+router.post('/notifications/read-all', requireAuth, asyncHandler(notifications.markAllRead));
+router.delete('/notifications/:id', requireAuth, asyncHandler(notifications.deleteNotification));
 
 // ---------------- Chat Sections (Personal Folders) ----------------
 router.get('/chat-sections', requireAuth, asyncHandler(chatSections.listSections));
