@@ -38,8 +38,17 @@ const messageSchema = new mongoose.Schema(
     content: { type: String, trim: true, maxlength: 2000, default: '' },
     messageType: {
       type: String,
-      enum: ['text', 'image', 'video', 'audio', 'file'],
+      enum: ['text', 'image', 'video', 'audio', 'file', 'system'],
       default: 'text',
+    },
+    systemEvent: {
+      eventType: {
+        type: String,
+        enum: ['member_joined', 'member_left', 'room_created'],
+        default: null,
+      },
+      actorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      actorUsername: { type: String, default: '' },
     },
     media: {
       url: { type: String, default: '' },

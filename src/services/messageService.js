@@ -83,7 +83,7 @@ async function listForConversation(conversationId, userId, { cursor, before, lim
   const rawDocs = await Message.find(query)
     .sort({ createdAt: -1, _id: -1 })
     .limit(n)
-    .select('conversationId senderId content messageType media linkPreview replyTo reactions edited editedAt deletedAt deliveredTo readBy status createdAt')
+    .select('conversationId senderId content messageType media linkPreview replyTo reactions edited editedAt deletedAt deliveredTo readBy status systemEvent createdAt')
     .populate('senderId', 'username displayName avatarId avatarUrl')
     .populate({
       path: 'replyTo',
@@ -104,6 +104,9 @@ async function listForConversation(conversationId, userId, { cursor, before, lim
 }
 
 async function create({ conversationId, senderId, content, messageType = 'text', media = null, replyTo = null }) {
+  if (messageType === 'system') {
+    throw new ApiError(400, 'Cannot send system messages directly');
+  }
   assertValidId(conversationId);
   const convo = await assertMember(conversationId, senderId);
 
@@ -322,9 +325,52 @@ async function toggleReaction(messageId, userId, emoji) {
   ]);
 }
 
+/**
+ * Creates and persists an immutable join system message:
+ * "{username} joined the room"
+ *
+ * Stored securely in the messages collection with messageType: 'system' and
+ * systemEvent metadata. Updates conversation timestamp for chronological consistency.
+ */
+async function createSystemJoinMessage({ conversationId, actor }) {
+  assertValidId(conversationId);
+  const actorId = actor._id || actor.id;
+  const username = actor.username || 'Player';
+
+  const msg = await Message.create({
+    conversationId,
+    senderId: actorId,
+    content: `${username} joined the room`,
+    messageType: 'system',
+    systemEvent: {
+      eventType: 'member_joined',
+      actorId,
+      actorUsername: username,
+    },
+    deliveredTo: [actorId],
+    readBy: [actorId],
+    status: 'sent',
+  });
+
+  const populated = await Message.findById(msg._id)
+    .populate('senderId', 'username displayName avatarId avatarUrl')
+    .lean();
+
+  await Conversation.findByIdAndUpdate(conversationId, {
+    lastMessageAt: msg.createdAt,
+    updatedAt: msg.createdAt,
+  });
+
+  return {
+    ...populated,
+    id: populated._id.toString(),
+  };
+}
+
 module.exports = {
   listForConversation,
   create,
+  createSystemJoinMessage,
   uploadMedia,
   edit,
   remove,

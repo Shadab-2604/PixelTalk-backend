@@ -382,7 +382,9 @@ describe('5. Platform Admin Group Management', () => {
     assert.strictEqual(res.status, 200);
     assert.strictEqual(data.success, true);
     assert.ok(data.data.groups.length >= 1);
-    assert.strictEqual(data.data.groups[0].name, testGroup.name);
+    const found = data.data.groups.find((g) => (g.id || g._id) === testGroup._id.toString() || g.name === testGroup.name);
+    assert.ok(found, 'Test group should be in admin groups list');
+    assert.strictEqual(found.name, testGroup.name);
   });
 
   test('Admin can delete group and action is logged', async () => {

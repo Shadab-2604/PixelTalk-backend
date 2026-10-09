@@ -28,6 +28,7 @@ const Message = require('../models/Message');
 const User = require('../models/User');
 const GroupInvitation = require('../models/GroupInvitation');
 const cloudinaryService = require('./cloudinaryService');
+const messageService = require('./messageService');
 const { ApiError } = require('../utils/apiResponse');
 const { requireString, validAvatarId, sanitizeLimit } = require('../utils/validation');
 
@@ -83,6 +84,7 @@ async function listForUser(userId) {
         senderId: { $ne: userObjectId },
         readBy: { $ne: userObjectId },
         deletedAt: null,
+        messageType: { $ne: 'system' },
       },
     },
     {
@@ -360,6 +362,13 @@ async function createGroup(creator, { name, description, avatarId, avatarUrl, av
   const populated = await Conversation.findById(convo._id)
     .populate('members', 'username displayName avatarId avatarUrl presence lastSeen status role customStatus bio')
     .populate('createdBy', 'username displayName avatarId avatarUrl');
+
+  await messageService.createSystemJoinMessage({
+    conversationId: convo._id,
+    actor: creator,
+  }).catch((err) => {
+    console.warn('[createGroup] System message note:', err.message);
+  });
 
   return populated;
 }
@@ -730,8 +739,10 @@ async function respondToInvitation(userId, invitationId, action) {
   await invite.save();
 
   let populatedConvo = null;
+  let systemMessage = null;
 
   if (action === 'ACCEPT') {
+    const isNewMember = !convo.hasMember(userId);
     const userIdStr = userId.toString();
     const existingRoles = Array.isArray(convo.memberRoles) ? convo.memberRoles : [];
     if (!existingRoles.some((r) => (r.userId?._id || r.userId).toString() === userIdStr)) {
@@ -751,6 +762,19 @@ async function respondToInvitation(userId, invitationId, action) {
       .populate('members', 'username displayName avatarId avatarUrl presence lastSeen status role customStatus bio')
       .populate('pastMembers.userId', 'username displayName avatarId avatarUrl')
       .populate('createdBy', 'username displayName avatarId avatarUrl');
+
+    if (isNewMember) {
+      const joiningUser = await User.findById(userId).select('username displayName avatarId');
+      if (joiningUser) {
+        systemMessage = await messageService.createSystemJoinMessage({
+          conversationId: convo._id,
+          actor: joiningUser,
+        }).catch((err) => {
+          console.warn('[respondToInvitation] System message note:', err.message);
+          return null;
+        });
+      }
+    }
   }
 
   return {
@@ -758,6 +782,7 @@ async function respondToInvitation(userId, invitationId, action) {
     action,
     invitation: invite,
     conversation: populatedConvo,
+    systemMessage,
   };
 }
 
@@ -831,7 +856,7 @@ async function joinGroup(user, conversationId, passcode) {
       .populate('members', 'username displayName avatarId presence lastSeen status role customStatus bio')
       .populate('pastMembers.userId', 'username displayName avatarId avatarUrl')
       .populate('createdBy', 'username displayName avatarId');
-    return existingPopulated;
+    return { convo: existingPopulated, systemMessage: null, newlyJoined: false };
   }
 
   if (convo.privacy === 'private' && convo.passcodeHash) {
@@ -853,7 +878,15 @@ async function joinGroup(user, conversationId, passcode) {
     .populate('pastMembers.userId', 'username displayName avatarId avatarUrl')
     .populate('createdBy', 'username displayName avatarId');
 
-  return updated;
+  const systemMessage = await messageService.createSystemJoinMessage({
+    conversationId: convo._id,
+    actor: user,
+  }).catch((err) => {
+    console.warn('[joinGroup] System message note:', err.message);
+    return null;
+  });
+
+  return { convo: updated, systemMessage, newlyJoined: true };
 }
 
 async function leave(user, conversationId) {
@@ -987,7 +1020,7 @@ async function exportChatForUser(conversationId, userId) {
   // Fetch messages with safe projection (oldest first for chronological reading)
   const msgs = await Message.find(messageFilter)
     .sort({ createdAt: 1, _id: 1 })
-    .select('conversationId senderId content messageType media linkPreview replyTo reactions edited editedAt createdAt')
+    .select('conversationId senderId content messageType media linkPreview replyTo reactions edited editedAt systemEvent createdAt')
     .populate('senderId', 'username displayName')
     .lean();
 
@@ -998,6 +1031,7 @@ async function exportChatForUser(conversationId, userId) {
     senderDisplayName: m.senderId?.displayName || 'Unknown',
     content: m.content || '',
     messageType: m.messageType || 'text',
+    systemEvent: m.systemEvent || null,
     media: m.media?.url ? {
       url: m.media.url,
       type: m.media.type,

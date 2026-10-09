@@ -242,6 +242,12 @@ async function respondInvitation(req, res, next) {
     if (io) {
       if (action === 'ACCEPT' && result.conversation) {
         const convoId = String(result.conversation._id);
+        if (result.systemMessage) {
+          io.to(`conversation:${convoId}`).emit('new_message', {
+            message: result.systemMessage,
+            conversationId: convoId,
+          });
+        }
         io.to(`conversation:${convoId}`).emit('member_added', {
           conversationId: convoId,
           user: req.user,
@@ -296,8 +302,29 @@ async function pinConversation(req, res, next) {
 
 async function join(req, res, next) {
   try {
-    const convo = await conversationService.joinGroup(req.user, req.params.id, req.body.passcode);
-    res.json({ success: true, data: { conversation: convo } });
+    const result = await conversationService.joinGroup(req.user, req.params.id, req.body.passcode);
+    const convo = result.convo || result;
+    const systemMessage = result.systemMessage;
+
+    const io = req.app.get('io');
+    if (io) {
+      const convoId = String(convo._id);
+      if (systemMessage) {
+        io.to(`conversation:${convoId}`).emit('new_message', {
+          message: systemMessage,
+          conversationId: convoId,
+        });
+      }
+      if (result.newlyJoined) {
+        io.to(`conversation:${convoId}`).emit('member_joined', {
+          conversationId: convoId,
+          user: req.user,
+          conversation: convo,
+        });
+      }
+    }
+
+    res.json({ success: true, data: { conversation: convo, systemMessage } });
   } catch (err) {
     next(err);
   }
