@@ -138,6 +138,7 @@ router.post('/conversations/:id/clear', requireAuth, asyncHandler(convos.clearCo
 router.post('/conversations/:id/delete-chat', requireAuth, asyncHandler(convos.deleteChat));
 router.get('/conversations/:id/export', requireAuth, asyncHandler(convos.exportChat));
 router.post('/conversations/:conversationId/read', requireAuth, asyncHandler(messages.markRead));
+router.post('/conversations/:conversationId/unread', requireAuth, asyncHandler(messages.markUnread));
 
 // ---------------- Messages ----------------
 router.get('/messages/:conversationId', requireAuth, apiLimiter, asyncHandler(messages.list));

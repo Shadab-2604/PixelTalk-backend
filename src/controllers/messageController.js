@@ -66,6 +66,15 @@ async function markRead(req, res, next) {
   }
 }
 
+async function markUnread(req, res, next) {
+  try {
+    const result = await messageService.markUnread(req.params.conversationId, req.user._id);
+    ok(res, result);
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function edit(req, res, next) {
   try {
     const msg = await messageService.edit(req.params.id, req.user._id, req.body.content);
@@ -99,4 +108,4 @@ async function react(req, res, next) {
   }
 }
 
-module.exports = { list, create, uploadMedia, markRead, edit, remove, react };
+module.exports = { list, create, uploadMedia, markRead, markUnread, edit, remove, react };

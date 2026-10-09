@@ -251,6 +251,27 @@ async function markRead(conversationId, userId) {
   return ids;
 }
 
+async function markUnread(conversationId, userId) {
+  assertValidId(conversationId);
+  await assertMember(conversationId, userId);
+
+  // Find the latest non-deleted, non-system message in this conversation
+  const latestMsg = await Message.findOne({
+    conversationId,
+    deletedAt: null,
+    messageType: { $ne: 'system' },
+  }).sort({ createdAt: -1, _id: -1 });
+
+  if (latestMsg) {
+    await Message.updateOne(
+      { _id: latestMsg._id },
+      { $pull: { readBy: userId } },
+    );
+    return { messageId: latestMsg._id.toString() };
+  }
+  return { messageId: null };
+}
+
 async function markDelivered(conversationId, userId) {
   assertValidId(conversationId);
   await assertMember(conversationId, userId);
@@ -375,6 +396,7 @@ module.exports = {
   edit,
   remove,
   markRead,
+  markUnread,
   markDelivered,
   toggleReaction,
   assertMember,

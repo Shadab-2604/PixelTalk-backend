@@ -81,7 +81,6 @@ async function listForUser(userId) {
     {
       $match: {
         conversationId: { $in: convoIds },
-        senderId: { $ne: userObjectId },
         readBy: { $ne: userObjectId },
         deletedAt: null,
         messageType: { $ne: 'system' },
@@ -819,8 +818,8 @@ async function removeMember(actorId, conversationId, targetUserId) {
     throw new ApiError(403, 'The group owner cannot be removed');
   }
 
-  const updated = await Conversation.findByIdAndUpdate(
-    conversationId,
+  await Conversation.updateOne(
+    { _id: conversationId },
     {
       $pull: {
         members: targetUserId,
@@ -828,6 +827,12 @@ async function removeMember(actorId, conversationId, targetUserId) {
         memberRoles: { userId: targetUserId },
         pastMembers: { userId: targetUserId },
       },
+    },
+  );
+
+  const updated = await Conversation.findByIdAndUpdate(
+    conversationId,
+    {
       $push: {
         pastMembers: {
           userId: targetUserId,
@@ -898,8 +903,8 @@ async function leave(user, conversationId) {
     throw new ApiError(403, 'The room owner cannot leave the group — transfer ownership or delete it instead');
   }
 
-  const updated = await Conversation.findByIdAndUpdate(
-    conversationId,
+  await Conversation.updateOne(
+    { _id: conversationId },
     {
       $pull: {
         members: user._id,
@@ -907,6 +912,12 @@ async function leave(user, conversationId) {
         memberRoles: { userId: user._id },
         pastMembers: { userId: user._id },
       },
+    },
+  );
+
+  const updated = await Conversation.findByIdAndUpdate(
+    conversationId,
+    {
       $push: {
         pastMembers: {
           userId: user._id,
