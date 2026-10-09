@@ -44,11 +44,26 @@ const messageSchema = new mongoose.Schema(
     systemEvent: {
       eventType: {
         type: String,
-        enum: ['member_joined', 'member_left', 'room_created'],
+        enum: [
+          'member_joined',
+          'member_left',
+          'member_removed',
+          'member_role_changed',
+          'owner_transferred',
+          'room_created',
+          'group_name_changed',
+          'group_description_changed',
+          'group_photo_changed',
+          'group_photo_removed',
+          'group_settings_changed',
+        ],
         default: null,
       },
       actorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
       actorUsername: { type: String, default: '' },
+      targetUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      targetUsername: { type: String, default: '' },
+      metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
     },
     media: {
       url: { type: String, default: '' },

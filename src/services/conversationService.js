@@ -485,7 +485,108 @@ async function updateSettings(actorId, conversationId, body) {
     .populate('members', 'username displayName avatarId avatarUrl presence lastSeen status role customStatus bio')
     .populate('createdBy', 'username displayName avatarId avatarUrl');
 
-  return updated;
+  // Generate system messages for genuine setting & profile changes
+  const systemMessages = [];
+  try {
+    const actorUser = await User.findById(actorId).select('username displayName avatarId');
+    const actorName = actorUser?.displayName || actorUser?.username || 'Admin';
+
+    // 1. Group Name Changed
+    if (updates.name && updates.name !== convo.name) {
+      const msg = await messageService.createSystemMessage({
+        conversationId: convo._id,
+        actor: actorUser,
+        eventType: 'group_name_changed',
+        content: `${actorName} changed the group name to "${updates.name}"`,
+        metadata: { oldName: convo.name, newName: updates.name },
+      });
+      if (msg) systemMessages.push(msg);
+    }
+
+    // 2. Group Description Changed
+    if (updates.description !== undefined && updates.description !== (convo.description || '')) {
+      const msg = await messageService.createSystemMessage({
+        conversationId: convo._id,
+        actor: actorUser,
+        eventType: 'group_description_changed',
+        content: `${actorName} updated the group description`,
+      });
+      if (msg) systemMessages.push(msg);
+    }
+
+    // 3. Group Photo Changed / Removed
+    if (body.avatarUrl !== undefined) {
+      if (body.avatarUrl === '' && convo.avatarUrl) {
+        const msg = await messageService.createSystemMessage({
+          conversationId: convo._id,
+          actor: actorUser,
+          eventType: 'group_photo_removed',
+          content: `${actorName} removed the group photo`,
+        });
+        if (msg) systemMessages.push(msg);
+      } else if (body.avatarUrl && body.avatarUrl !== convo.avatarUrl) {
+        const msg = await messageService.createSystemMessage({
+          conversationId: convo._id,
+          actor: actorUser,
+          eventType: 'group_photo_changed',
+          content: `${actorName} updated the group photo`,
+        });
+        if (msg) systemMessages.push(msg);
+      }
+    } else if (body.avatarId !== undefined && body.avatarId !== convo.avatarId && !convo.avatarUrl) {
+      const msg = await messageService.createSystemMessage({
+        conversationId: convo._id,
+        actor: actorUser,
+        eventType: 'group_photo_changed',
+        content: `${actorName} updated the group photo`,
+      });
+      if (msg) systemMessages.push(msg);
+    }
+
+    // 4. Admin-Only Messaging Changed
+    if (newSettings.adminOnlyChat !== Boolean(convo.settings?.adminOnlyChat)) {
+      const msg = await messageService.createSystemMessage({
+        conversationId: convo._id,
+        actor: actorUser,
+        eventType: 'group_settings_changed',
+        content: newSettings.adminOnlyChat
+          ? `${actorName} enabled admin-only messaging`
+          : `${actorName} disabled admin-only messaging`,
+        metadata: { setting: 'adminOnlyChat', value: newSettings.adminOnlyChat },
+      });
+      if (msg) systemMessages.push(msg);
+    }
+
+    // 5. Invite Permission Changed
+    if (newSettings.invitePermission !== (convo.settings?.invitePermission || 'ANY_MEMBER')) {
+      const msg = await messageService.createSystemMessage({
+        conversationId: convo._id,
+        actor: actorUser,
+        eventType: 'group_settings_changed',
+        content: newSettings.invitePermission === 'ADMINS_ONLY'
+          ? `${actorName} changed who can invite members to Admins Only`
+          : `${actorName} changed who can invite members to Any Member`,
+        metadata: { setting: 'invitePermission', value: newSettings.invitePermission },
+      });
+      if (msg) systemMessages.push(msg);
+    }
+
+    // 6. Privacy Changed
+    if (updates.privacy && updates.privacy !== convo.privacy) {
+      const msg = await messageService.createSystemMessage({
+        conversationId: convo._id,
+        actor: actorUser,
+        eventType: 'group_settings_changed',
+        content: `${actorName} updated the group privacy to ${updates.privacy}`,
+        metadata: { setting: 'privacy', value: updates.privacy },
+      });
+      if (msg) systemMessages.push(msg);
+    }
+  } catch (err) {
+    console.warn('[updateSettings] System message generation notice:', err.message);
+  }
+
+  return { convo: updated, systemMessages };
 }
 
 async function getMembers(conversationId, actorId) {
@@ -583,7 +684,48 @@ async function updateMemberRole(actorId, conversationId, targetUserId, newRole) 
     .populate('pastMembers.userId', 'username displayName avatarId avatarUrl')
     .populate('createdBy', 'username displayName avatarId avatarUrl');
 
-  return { convo: populated, targetUserId, newRole: canonicalRole };
+  let systemMessage = null;
+  try {
+    const actorUser = await User.findById(actorId).select('username displayName avatarId');
+    const targetUser = await User.findById(targetUserId).select('username displayName avatarId');
+    const actorName = actorUser?.displayName || actorUser?.username || 'Admin';
+    const targetName = targetUser?.displayName || targetUser?.username || 'Player';
+
+    if (canonicalRole === 'Owner') {
+      systemMessage = await messageService.createSystemMessage({
+        conversationId,
+        actor: actorUser,
+        targetUser,
+        eventType: 'owner_transferred',
+        content: `${actorName} transferred group ownership to ${targetName}`,
+        metadata: { oldOwnerId: actorId, newOwnerId: targetUserId },
+      });
+    } else if (targetRole !== canonicalRole) {
+      let content = `${actorName} changed ${targetName}'s role to ${canonicalRole}`;
+      if (canonicalRole === 'Admin') {
+        content = `${targetName} was promoted to admin by ${actorName}`;
+      } else if (canonicalRole === 'Moderator') {
+        content = targetRole === 'Admin'
+          ? `${targetName} was demoted to moderator by ${actorName}`
+          : `${targetName} was promoted to moderator by ${actorName}`;
+      } else if (canonicalRole === 'Member') {
+        content = `${targetName} was demoted to member by ${actorName}`;
+      }
+
+      systemMessage = await messageService.createSystemMessage({
+        conversationId,
+        actor: actorUser,
+        targetUser,
+        eventType: 'member_role_changed',
+        content,
+        metadata: { oldRole: targetRole, newRole: canonicalRole },
+      });
+    }
+  } catch (err) {
+    console.warn('[updateMemberRole] System message generation notice:', err.message);
+  }
+
+  return { convo: populated, targetUserId, newRole: canonicalRole, systemMessage };
 }
 
 /*
@@ -848,7 +990,34 @@ async function removeMember(actorId, conversationId, targetUserId) {
     .populate('pastMembers.userId', 'username displayName avatarId avatarUrl')
     .populate('createdBy', 'username displayName avatarId');
 
-  return { convo: updated, removedId: targetUserId, selfRemoved: isSelf };
+  let systemMessage = null;
+  try {
+    const actorUser = await User.findById(actorId).select('username displayName avatarId');
+    const targetUser = await User.findById(targetUserId).select('username displayName avatarId');
+    const actorName = actorUser?.displayName || actorUser?.username || 'Admin';
+    const targetName = targetUser?.displayName || targetUser?.username || 'Player';
+
+    if (isSelf) {
+      systemMessage = await messageService.createSystemMessage({
+        conversationId,
+        actor: targetUser || { _id: targetUserId, username: targetName },
+        eventType: 'member_left',
+        content: `${targetName} left the room`,
+      });
+    } else {
+      systemMessage = await messageService.createSystemMessage({
+        conversationId,
+        actor: actorUser,
+        targetUser: targetUser || { _id: targetUserId, username: targetName },
+        eventType: 'member_removed',
+        content: `${targetName} was removed from the room by ${actorName}`,
+      });
+    }
+  } catch (err) {
+    console.warn('[removeMember] System message generation notice:', err.message);
+  }
+
+  return { convo: updated, removedId: targetUserId, selfRemoved: isSelf, systemMessage };
 }
 
 async function joinGroup(user, conversationId, passcode) {
@@ -932,7 +1101,21 @@ async function leave(user, conversationId) {
     .populate('members', 'username displayName avatarId presence lastSeen status role customStatus bio')
     .populate('pastMembers.userId', 'username displayName avatarId avatarUrl')
     .populate('createdBy', 'username displayName avatarId');
-  return updated;
+
+  let systemMessage = null;
+  try {
+    const username = user.displayName || user.username || 'Player';
+    systemMessage = await messageService.createSystemMessage({
+      conversationId,
+      actor: user,
+      eventType: 'member_left',
+      content: `${username} left the room`,
+    });
+  } catch (err) {
+    console.warn('[leave] System message generation notice:', err.message);
+  }
+
+  return { convo: updated, systemMessage };
 }
 
 async function remove(actorId, conversationId) {

@@ -347,26 +347,32 @@ async function toggleReaction(messageId, userId, emoji) {
 }
 
 /**
- * Creates and persists an immutable join system message:
- * "{username} joined the room"
+ * Creates and persists an immutable system message:
+ * e.g., "{username} joined the room", "{target} was removed from the room by {actor}",
+ * "{actor} changed the group name to '{name}'", etc.
  *
  * Stored securely in the messages collection with messageType: 'system' and
- * systemEvent metadata. Updates conversation timestamp for chronological consistency.
+ * structured systemEvent metadata. Updates conversation timestamp for chronological consistency.
  */
-async function createSystemJoinMessage({ conversationId, actor }) {
+async function createSystemMessage({ conversationId, actor, eventType, content, targetUser = null, metadata = {} }) {
   assertValidId(conversationId);
-  const actorId = actor._id || actor.id;
-  const username = actor.username || 'Player';
+  const actorId = actor?._id || actor?.id || actor;
+  const actorUsername = actor?.username || actor?.displayName || 'Player';
+  const targetId = targetUser?._id || targetUser?.id || targetUser || null;
+  const targetUsername = targetUser?.username || targetUser?.displayName || '';
 
   const msg = await Message.create({
     conversationId,
     senderId: actorId,
-    content: `${username} joined the room`,
+    content: content || '',
     messageType: 'system',
     systemEvent: {
-      eventType: 'member_joined',
+      eventType,
       actorId,
-      actorUsername: username,
+      actorUsername,
+      targetUserId: targetId,
+      targetUsername,
+      metadata,
     },
     deliveredTo: [actorId],
     readBy: [actorId],
@@ -375,6 +381,7 @@ async function createSystemJoinMessage({ conversationId, actor }) {
 
   const populated = await Message.findById(msg._id)
     .populate('senderId', 'username displayName avatarId avatarUrl')
+    .populate('systemEvent.targetUserId', 'username displayName avatarId avatarUrl')
     .lean();
 
   await Conversation.findByIdAndUpdate(conversationId, {
@@ -388,9 +395,24 @@ async function createSystemJoinMessage({ conversationId, actor }) {
   };
 }
 
+/**
+ * Creates and persists an immutable join system message:
+ * "{username} joined the room"
+ */
+async function createSystemJoinMessage({ conversationId, actor }) {
+  const username = actor?.username || 'Player';
+  return createSystemMessage({
+    conversationId,
+    actor,
+    eventType: 'member_joined',
+    content: `${username} joined the room`,
+  });
+}
+
 module.exports = {
   listForConversation,
   create,
+  createSystemMessage,
   createSystemJoinMessage,
   uploadMedia,
   edit,

@@ -105,12 +105,20 @@ async function startDirect(req, res, next) {
 
 async function patchSettings(req, res, next) {
   try {
-    const convo = await conversationService.updateSettings(req.user._id, req.params.id, req.body);
+    const result = await conversationService.updateSettings(req.user._id, req.params.id, req.body);
+    const convo = result.convo || result;
+    const systemMessages = result.systemMessages || [];
 
     // Realtime synchronization: broadcast update to conversation room & members
     const io = req.app.get('io');
     if (io) {
       const convoId = String(convo._id);
+      for (const sysMsg of systemMessages) {
+        io.to(`conversation:${convoId}`).emit('new_message', {
+          message: sysMsg,
+          conversationId: convoId,
+        });
+      }
       io.to(`conversation:${convoId}`).emit('group_updated', { conversation: convo });
       io.to(`conversation:${convoId}`).emit('room_updated', { conversation: convo });
       if (Array.isArray(convo.members)) {
@@ -121,7 +129,7 @@ async function patchSettings(req, res, next) {
       }
     }
 
-    res.json({ success: true, data: { conversation: convo } });
+    res.json({ success: true, data: { conversation: convo, systemMessages } });
   } catch (err) {
     next(err);
   }
@@ -145,10 +153,16 @@ async function updateMemberRole(req, res, next) {
       req.body.role,
     );
 
-    // Realtime broadcast of role updates
+    // Realtime broadcast of role updates and system message
     const io = req.app.get('io');
     if (io) {
       const convoId = String(req.params.id);
+      if (result.systemMessage) {
+        io.to(`conversation:${convoId}`).emit('new_message', {
+          message: result.systemMessage,
+          conversationId: convoId,
+        });
+      }
       io.to(`conversation:${convoId}`).emit('role_updated', {
         conversationId: convoId,
         targetUserId: req.params.userId,
@@ -305,7 +319,7 @@ async function respondInvitation(req, res, next) {
 
 async function removeMember(req, res, next) {
   try {
-    const { convo, removedId, selfRemoved } = await conversationService.removeMember(
+    const { convo, removedId, selfRemoved, systemMessage } = await conversationService.removeMember(
       req.user._id,
       req.params.id,
       req.params.userId,
@@ -314,6 +328,12 @@ async function removeMember(req, res, next) {
     const io = req.app.get('io');
     if (io) {
       const convoId = String(req.params.id);
+      if (systemMessage) {
+        io.to(`conversation:${convoId}`).emit('new_message', {
+          message: systemMessage,
+          conversationId: convoId,
+        });
+      }
       io.to(`conversation:${convoId}`).emit('member_removed', {
         conversationId: convoId,
         userId: String(removedId),
@@ -323,9 +343,22 @@ async function removeMember(req, res, next) {
         conversationId: convoId,
         userId: String(removedId),
       });
+
+      // Evict removed user's active sockets from the conversation room
+      try {
+        const userRoom = io.sockets.adapter.rooms.get(`user:${removedId}`);
+        if (userRoom) {
+          for (const sid of userRoom) {
+            const socket = io.sockets.sockets.get(sid);
+            if (socket) socket.leave(`conversation:${convoId}`);
+          }
+        }
+      } catch (e) {
+        // non-blocking
+      }
     }
 
-    res.json({ success: true, data: { conversation: convo, removedId, selfRemoved } });
+    res.json({ success: true, data: { conversation: convo, removedId, selfRemoved, systemMessage } });
   } catch (err) {
     next(err);
   }
@@ -372,8 +405,41 @@ async function join(req, res, next) {
 
 async function leave(req, res, next) {
   try {
-    const convo = await conversationService.leave(req.user, req.params.id);
-    res.json({ success: true, data: { conversation: convo } });
+    const result = await conversationService.leave(req.user, req.params.id);
+    const convo = result.convo || result;
+    const systemMessage = result.systemMessage;
+
+    const io = req.app.get('io');
+    if (io) {
+      const convoId = String(convo._id);
+      if (systemMessage) {
+        io.to(`conversation:${convoId}`).emit('new_message', {
+          message: systemMessage,
+          conversationId: convoId,
+        });
+      }
+      io.to(`conversation:${convoId}`).emit('member_left', {
+        conversationId: convoId,
+        userId: String(req.user._id),
+        user: req.user,
+        conversation: convo,
+      });
+
+      // Evict leaving user's active sockets from the conversation room
+      try {
+        const userRoom = io.sockets.adapter.rooms.get(`user:${req.user._id}`);
+        if (userRoom) {
+          for (const sid of userRoom) {
+            const socket = io.sockets.sockets.get(sid);
+            if (socket) socket.leave(`conversation:${convoId}`);
+          }
+        }
+      } catch (e) {
+        // non-blocking
+      }
+    }
+
+    res.json({ success: true, data: { conversation: convo, systemMessage } });
   } catch (err) {
     next(err);
   }
