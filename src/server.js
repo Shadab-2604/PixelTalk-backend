@@ -49,6 +49,8 @@ const routes = require('./routes');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { initSockets } = require('./sockets');
 const { expressCorsOrigin } = require('./utils/cors');
+const { sanitizeMiddleware } = require('./middleware/sanitize');
+const { csrfOriginGuard } = require('./middleware/csrf');
 const { migrateLegacyUsers } = require('./utils/migrateLegacyUsers');
 
 const app = express();
@@ -65,6 +67,10 @@ app.use(
 );
 app.use(express.json({ limit: '100kb' }));
 app.use(cookieParser());
+// Strip NoSQL operators ($… / dotted keys) from all inbound params & reject
+// cross-origin state-changing requests before any route handler runs.
+app.use(sanitizeMiddleware);
+app.use(csrfOriginGuard);
 
 // Root & Health check endpoints
 app.get('/', (req, res) =>

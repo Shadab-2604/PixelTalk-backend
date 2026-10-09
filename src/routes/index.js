@@ -55,27 +55,63 @@ const apiLimiter = rateLimit({
   message: { success: false, message: 'Rate limit exceeded' },
 });
 
+// Stricter bucket for password-guessing surfaces (login attempts)
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many login attempts, please try again later' },
+});
+
+// OTP dispatch buckets prevent email/SMS bombing of verification & reset flows
+const otpSendLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many code requests, please try again later' },
+});
+
+// Uploads buffer entire files in memory — cap how often they can be requested
+const uploadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many uploads, please try again later' },
+});
+
+// Social graph actions (follow/unfollow) are cheap to spam and noisy to victims
+const followLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many follow actions, please try again later' },
+});
+
 // ---------------- Auth ----------------
 router.post('/auth/register', authLimiter, asyncHandler(auth.register));
-router.post('/auth/login', authLimiter, asyncHandler(auth.login));
+router.post('/auth/login', loginLimiter, asyncHandler(auth.login));
 router.post('/auth/logout', authLimiter, asyncHandler(auth.logout));
 router.get('/auth/me', requireAuth, asyncHandler(auth.me));
 router.post('/auth/change-password', requireAuth, authLimiter, asyncHandler(auth.changePassword));
 
 // ---------------- Auth OTP Flows ----------------
-router.post('/auth/otp/send-verification', authLimiter, asyncHandler(auth.sendVerificationOtp));
+router.post('/auth/otp/send-verification', otpSendLimiter, asyncHandler(auth.sendVerificationOtp));
 router.post('/auth/otp/verify-email', authLimiter, asyncHandler(auth.verifyEmailOtp));
-router.post('/auth/otp/send-login-code', authLimiter, asyncHandler(auth.sendLoginOtp));
-router.post('/auth/otp/login', authLimiter, asyncHandler(auth.verifyLoginOtp));
-router.post('/auth/otp/send-password-reset', authLimiter, asyncHandler(auth.sendPasswordResetOtp));
+router.post('/auth/otp/send-login-code', otpSendLimiter, asyncHandler(auth.sendLoginOtp));
+router.post('/auth/otp/login', loginLimiter, asyncHandler(auth.verifyLoginOtp));
+router.post('/auth/otp/send-password-reset', otpSendLimiter, asyncHandler(auth.sendPasswordResetOtp));
 router.post('/auth/otp/reset-password', authLimiter, asyncHandler(auth.resetPasswordWithOtp));
 
 // ---------------- Users ----------------
 router.get('/users/me', requireAuth, asyncHandler(users.getMe));
 router.patch('/users/me', requireAuth, asyncHandler(users.patchMe));
-router.post('/users/me/avatar', requireAuth, uploadAvatar, asyncHandler(users.uploadAvatar));
+router.post('/users/me/avatar', requireAuth, uploadLimiter, uploadAvatar, asyncHandler(users.uploadAvatar));
 router.delete('/users/me/avatar', requireAuth, asyncHandler(users.deleteAvatar));
-router.post('/users/me/banner', requireAuth, uploadBanner, asyncHandler(users.uploadBanner));
+router.post('/users/me/banner', requireAuth, uploadLimiter, uploadBanner, asyncHandler(users.uploadBanner));
 router.delete('/users/me/banner', requireAuth, asyncHandler(users.deleteBanner));
 router.patch('/users/me/password', requireAuth, authLimiter, asyncHandler(users.patchMyPassword));
 router.get('/users/check-username', optionalAuth, asyncHandler(users.checkUsername));
@@ -87,8 +123,8 @@ router.patch('/users/vibrate/:conversationId', requireAuth, asyncHandler(users.t
 // ---------------- Follow System & Privacy ----------------
 router.get('/users/follow-requests/pending', requireAuth, asyncHandler(follow.getPendingRequests));
 router.post('/users/follow-requests/:followerId/respond', requireAuth, asyncHandler(follow.respondFollowRequest));
-router.post('/users/:id/follow', requireAuth, asyncHandler(follow.followUser));
-router.post('/users/:id/unfollow', requireAuth, asyncHandler(follow.unfollowUser));
+router.post('/users/:id/follow', requireAuth, followLimiter, asyncHandler(follow.followUser));
+router.post('/users/:id/unfollow', requireAuth, followLimiter, asyncHandler(follow.unfollowUser));
 router.get('/users/:id/followers', requireAuth, asyncHandler(follow.getFollowers));
 router.get('/users/:id/following', requireAuth, asyncHandler(follow.getFollowing));
 router.get('/users/by-username/:username', requireAuth, asyncHandler(users.getUserByUsername));
@@ -117,7 +153,7 @@ router.get('/conversations', requireAuth, apiLimiter, asyncHandler(convos.list))
 router.get('/conversations/search', requireAuth, asyncHandler(convos.search));
 router.get('/conversations/invitations/my', requireAuth, asyncHandler(convos.getMyInvitations));
 router.post('/conversations/invitations/:id/respond', requireAuth, asyncHandler(convos.respondInvitation));
-router.post('/conversations/upload-avatar', requireAuth, uploadAvatar, asyncHandler(convos.uploadGroupAvatar));
+router.post('/conversations/upload-avatar', requireAuth, uploadLimiter, uploadAvatar, asyncHandler(convos.uploadGroupAvatar));
 router.post('/conversations/direct', requireAuth, asyncHandler(convos.startDirect));
 router.post('/conversations/groups', requireAuth, asyncHandler(convos.createGroup));
 router.get('/conversations/:id', requireAuth, apiLimiter, asyncHandler(convos.getOne));
@@ -142,7 +178,7 @@ router.post('/conversations/:conversationId/unread', requireAuth, asyncHandler(m
 
 // ---------------- Messages ----------------
 router.get('/messages/:conversationId', requireAuth, apiLimiter, asyncHandler(messages.list));
-router.post('/messages/upload-media', requireAuth, uploadMedia, asyncHandler(messages.uploadMedia));
+router.post('/messages/upload-media', requireAuth, uploadLimiter, uploadMedia, asyncHandler(messages.uploadMedia));
 router.post('/messages', requireAuth, apiLimiter, asyncHandler(messages.create));
 router.patch('/messages/:id', requireAuth, asyncHandler(messages.edit));
 router.delete('/messages/:id', requireAuth, asyncHandler(messages.remove));

@@ -487,6 +487,7 @@ function initSockets(httpServer) {
       if (!conversationId) return;
       try {
         const activeUser = socket.data.user || user;
+        await messageService.assertMember(conversationId, activeUser._id);
         const stopPayload = {
           conversationId,
           userId: activeUser._id.toString(),
@@ -700,8 +701,12 @@ function initSockets(httpServer) {
     });
 
     socket.on('call:reject', async ({ callId, reason = 'REJECTED' } = {}, ack) => {
+      const activeUser = socket.data.user || user;
+      const currentUserId = activeUser._id.toString();
       const call = activeCalls.get(callId);
       if (!call) return;
+      // Only the caller or receiver of this call may reject it
+      if (String(call.callerId) !== currentUserId && String(call.receiverId) !== currentUserId) return;
       cleanupCall(callId);
       await logCallMessage(io, call, 'rejected');
       io.to(`user:${call.callerId}`).emit('call:rejected', { callId, reason });
@@ -710,8 +715,12 @@ function initSockets(httpServer) {
     });
 
     socket.on('call:cancel', async ({ callId } = {}, ack) => {
+      const activeUser = socket.data.user || user;
+      const currentUserId = activeUser._id.toString();
       const call = activeCalls.get(callId);
       if (!call) return;
+      // Only the caller or receiver of this call may cancel it
+      if (String(call.callerId) !== currentUserId && String(call.receiverId) !== currentUserId) return;
       cleanupCall(callId);
       await logCallMessage(io, call, 'cancelled');
       io.to(`user:${call.receiverId}`).emit('call:cancelled', { callId });
@@ -724,6 +733,14 @@ function initSockets(httpServer) {
       const { callId, signal } = payload;
       const targetUserId = String(payload.targetUserId || payload.toUserId || '');
       if (!targetUserId || !signal) return;
+
+      // Only participants of an existing 1-to-1 call may relay WebRTC signals,
+      // and only to the counterparty of that call.
+      const call = activeCalls.get(callId);
+      if (!call) return;
+      const isParticipant = String(call.callerId) === currentUserId || String(call.receiverId) === currentUserId;
+      const isCounterparty = targetUserId === String(call.callerId) || targetUserId === String(call.receiverId);
+      if (!isParticipant || !isCounterparty) return;
 
       io.to(`user:${targetUserId}`).emit('call:signal', {
         callId,
@@ -739,6 +756,13 @@ function initSockets(httpServer) {
       const targetUserId = String(payload.targetUserId || payload.toUserId || '');
       if (!targetUserId) return;
 
+      // Only participants of an existing call may broadcast media state changes
+      const call = activeCalls.get(callId);
+      if (!call) return;
+      const isParticipant = String(call.callerId) === currentUserId || String(call.receiverId) === currentUserId;
+      const isCounterparty = targetUserId === String(call.callerId) || targetUserId === String(call.receiverId);
+      if (!isParticipant || !isCounterparty) return;
+
       io.to(`user:${targetUserId}`).emit('call:media_state', {
         callId,
         fromUserId: currentUserId,
@@ -751,7 +775,7 @@ function initSockets(httpServer) {
       const activeUser = socket.data.user || user;
       const currentUserId = activeUser._id.toString();
       const call = activeCalls.get(callId);
-      if (call) {
+      if (call && (String(call.callerId) === currentUserId || String(call.receiverId) === currentUserId)) {
         const wasConnected = call.status === 'CONNECTED';
         cleanupCall(callId);
         await logCallMessage(io, call, wasConnected ? 'completed' : 'cancelled');

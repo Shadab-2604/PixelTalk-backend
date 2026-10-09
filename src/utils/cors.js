@@ -3,8 +3,9 @@
  *
  * Responsibility:
  * Centralizes origin validation for both Express HTTP requests and Socket.IO handshakes.
- * Supports comma-separated origin lists in CLIENT_URL, strips trailing slashes,
- * supports Vercel preview deployments (*.vercel.app), and allows local dev fallbacks.
+ * Supports comma-separated origin lists in CLIENT_URL and strips trailing slashes.
+ * Only EXPLICITLY listed origins are trusted in production; localhost/loopback origins
+ * are additionally accepted outside production for local development.
  */
 
 const config = require('../config');
@@ -24,23 +25,23 @@ function isOriginAllowed(origin) {
   if (!origin) return true;
 
   const normalized = origin.replace(/\/+$/, '').toLowerCase();
-  if (allowedOrigins.some((ao) => ao.toLowerCase() === normalized) || allowedOrigins.includes('*')) {
-    return true;
-  }
 
-  // Support all Vercel deployments (*.vercel.app) and PixelTalk domains
-  if (normalized.endsWith('.vercel.app') || normalized.includes('pixel-talk') || normalized.includes('pixeltalk')) {
-    return true;
-  }
+  // Exact match against the explicit CLIENT_URL allowlist (single source of truth)
+  if (allowedOrigins.includes('*')) return true;
+  if (allowedOrigins.some((ao) => ao.toLowerCase() === normalized)) return true;
 
-  // Support Render hosting domains (*.onrender.com)
-  if (normalized.endsWith('.onrender.com')) {
-    return true;
-  }
-
-  // Allow localhost and local IP origins for testing
-  if (normalized.includes('localhost') || normalized.includes('127.0.0.1') || normalized.startsWith('http://192.168.')) {
-    return true;
+  // Local development convenience (localhost / loopback / LAN IPs) is only granted
+  // outside production so credentialed cross-site requests from arbitrary local
+  // origins cannot reach production data.
+  if (!config.isProd) {
+    if (
+      normalized.startsWith('http://localhost:') ||
+      normalized.startsWith('http://127.0.0.1:') ||
+      normalized.startsWith('http://[::1]:') ||
+      normalized.startsWith('http://192.168.')
+    ) {
+      return true;
+    }
   }
 
   return false;
