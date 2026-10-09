@@ -70,9 +70,13 @@ const userSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-// Hash whenever the password field is set or changed
+// Hash whenever the password field is set or changed (unless already a valid bcrypt hash)
 userSchema.pre('save', async function hashPassword() {
   if (!this.isModified('passwordHash')) return;
+  // If the value is already a valid 60-character bcrypt hash (e.g. from ADMIN_PASSWORD_HASH in .env), do not re-hash
+  if (typeof this.passwordHash === 'string' && /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/.test(this.passwordHash)) {
+    return;
+  }
   const salt = await bcrypt.genSalt(10);
   this.passwordHash = await bcrypt.hash(this.passwordHash, salt);
 });
@@ -81,6 +85,7 @@ userSchema.methods.comparePassword = async function comparePassword(candidate) {
   if (!this.passwordHash || !candidate) return false;
   return bcrypt.compare(candidate, this.passwordHash);
 };
+
 
 /*
  * PLATFORM ROLE SEPARATION

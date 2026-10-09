@@ -26,6 +26,7 @@
  */
 
 const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
 
 const chatSectionSchema = new mongoose.Schema(
   {
@@ -52,12 +53,38 @@ const chatSectionSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    isLocked: {
+      type: Boolean,
+      default: false,
+    },
+    hasPasscode: {
+      type: Boolean,
+      default: false,
+    },
+    passcodeHash: {
+      type: String,
+      select: false,
+    },
   },
   { timestamps: true },
 );
 
-// Prevent duplicate section names for the same user
+// Prevent duplicate section/folder names for the same user
 chatSectionSchema.index({ userId: 1, nameNormalized: 1 }, { unique: true });
 chatSectionSchema.index({ userId: 1, order: 1 });
+
+chatSectionSchema.methods.comparePasscode = async function comparePasscode(candidate) {
+  if (!this.passcodeHash) return false;
+  return bcrypt.compare(candidate, this.passcodeHash);
+};
+
+chatSectionSchema.set('toJSON', {
+  virtuals: true,
+  transform(doc, ret) {
+    delete ret.passcodeHash;
+    delete ret.__v;
+    return ret;
+  },
+});
 
 module.exports = mongoose.model('ChatSection', chatSectionSchema);

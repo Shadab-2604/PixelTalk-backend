@@ -34,7 +34,7 @@ const follow = require('../controllers/followController');
 const chatSections = require('../controllers/chatSectionController');
 const { requireAuth, optionalAuth, requireAdmin } = require('../middleware/auth');
 const { uploadAvatar, uploadBanner, uploadMedia } = require('../middleware/upload');
-const { asyncHandler } = require('../utils/apiResponse');
+const { asyncHandler, ApiError } = require('../utils/apiResponse');
 
 const router = express.Router();
 
@@ -97,6 +97,9 @@ router.get('/users/:id', requireAuth, asyncHandler(users.getUser));
 router.get('/chat-sections', requireAuth, asyncHandler(chatSections.listSections));
 router.post('/chat-sections', requireAuth, asyncHandler(chatSections.createSection));
 router.patch('/chat-sections/:id', requireAuth, asyncHandler(chatSections.renameSection));
+router.post('/chat-sections/:id/unlock', requireAuth, asyncHandler(chatSections.unlockSection));
+router.post('/chat-sections/:id/lock', requireAuth, asyncHandler(chatSections.setLock));
+router.post('/chat-sections/:id/remove-lock', requireAuth, asyncHandler(chatSections.removeLock));
 router.delete('/chat-sections/:id', requireAuth, asyncHandler(chatSections.deleteSection));
 router.post('/chat-sections/reorder', requireAuth, asyncHandler(chatSections.reorderSections));
 router.post('/conversations/:id/move-section', requireAuth, asyncHandler(chatSections.moveConversation));

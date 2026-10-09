@@ -100,7 +100,8 @@ app.use(errorHandler);
 const User = require('./models/User');
 
 async function ensureAdminUser() {
-  if (!config.adminEmail || !config.adminPassword) return;
+  const adminSecret = config.adminPasswordHash || config.adminPassword;
+  if (!config.adminEmail || !adminSecret) return;
 
   const adminQuery = {
     $or: [{ email: config.adminEmail }, { username: config.adminUsername }],
@@ -108,23 +109,49 @@ async function ensureAdminUser() {
 
   let admin = await User.findOne(adminQuery).select('+passwordHash');
   if (admin) {
-    admin.role = 'admin';
-    admin.status = 'active';
-    admin.passwordHash = config.adminPassword;
-    admin.displayName = config.adminDisplayName || admin.displayName;
-    await admin.save();
-    console.log(`[backend] Verified admin credentials from .env for: ${admin.email} (@${admin.username})`);
+    let modified = false;
+    if (admin.role !== 'admin') {
+      admin.role = 'admin';
+      modified = true;
+    }
+    if (admin.status !== 'active') {
+      admin.status = 'active';
+      modified = true;
+    }
+    if (admin.displayName !== (config.adminDisplayName || admin.displayName)) {
+      admin.displayName = config.adminDisplayName || admin.displayName;
+      modified = true;
+    }
+    // Only update password hash if it has changed
+    if (config.adminPasswordHash && admin.passwordHash !== config.adminPasswordHash) {
+      admin.passwordHash = config.adminPasswordHash;
+      modified = true;
+    } else if (config.adminPassword && !config.adminPasswordHash) {
+      // Check if current password matches candidate plaintext
+      const matches = await admin.comparePassword(config.adminPassword);
+      if (!matches) {
+        admin.passwordHash = config.adminPassword;
+        modified = true;
+      }
+    }
+
+    if (modified) {
+      await admin.save();
+      console.log(`[backend] Synchronized platform admin account from .env: @${admin.username}`);
+    } else {
+      console.log(`[backend] Platform admin account verified: @${admin.username}`);
+    }
   } else {
     admin = await User.create({
       username: config.adminUsername,
       displayName: config.adminDisplayName,
       email: config.adminEmail,
-      passwordHash: config.adminPassword,
+      passwordHash: adminSecret,
       avatarId: 'avatar-05',
       role: 'admin',
       status: 'active',
     });
-    console.log(`[backend] Seeded initial admin account from .env: ${admin.email} (@${admin.username})`);
+    console.log(`[backend] Seeded initial platform admin account from .env: @${admin.username}`);
   }
 
   // Demote any other account that may have been given role 'admin'

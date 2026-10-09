@@ -103,6 +103,13 @@ const conversationSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
+conversationSchema.pre('validate', function (next) {
+  if (this.type === 'group' && this.name && !this.nameNormalized) {
+    this.nameNormalized = this.name.toLowerCase().trim();
+  }
+  next();
+});
+
 conversationSchema.index({ members: 1 });
 conversationSchema.index({ type: 1 });
 conversationSchema.index({ name: 1 });

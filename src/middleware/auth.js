@@ -74,6 +74,8 @@ async function optionalAuth(req, res, next) {
   next();
 }
 
+const AdminAuditLog = require('../models/AdminAuditLog');
+
 /*
  * PLATFORM ADMIN AUTHORIZATION
  * WHAT: Enforces platform-level administration privileges.
@@ -82,6 +84,22 @@ async function optionalAuth(req, res, next) {
  */
 function requirePlatformAdmin(req, res, next) {
   if (!req.user || req.user.role !== 'admin') {
+    if (req.user) {
+      // Asynchronously record unauthorized administrative access attempt
+      AdminAuditLog.create({
+        adminId: req.user._id,
+        action: 'UNAUTHORIZED_ADMIN_ACCESS_ATTEMPT',
+        targetType: 'security',
+        metadata: {
+          ip: req.ip || req.headers['x-forwarded-for'] || 'unknown',
+          path: req.originalUrl,
+          method: req.method,
+          username: req.user.username,
+        },
+      }).catch((err) => {
+        console.warn('[Audit] Failed to log unauthorized admin access:', err.message);
+      });
+    }
     return next(new ApiError(403, 'Platform Administrator access required'));
   }
   next();

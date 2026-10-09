@@ -46,7 +46,7 @@ async function register(req, res, next) {
 
     const { user, token } = await authService.register({ username, displayName, email, password, avatarId });
     setAuthCookie(res, token);
-    ok(res, { user: userService.publicUser(user), token }, 201);
+    ok(res, { user: userService.publicUser(user, user._id), token }, 201);
   } catch (err) {
     next(err);
   }
@@ -56,9 +56,10 @@ async function login(req, res, next) {
   try {
     const identifier = requireString(req.body.identifier || req.body.email || req.body.username, 'Email or username', { min: 3, max: 254 });
     const password = validPassword(req.body.password);
-    const { user, token } = await authService.login({ identifier, password });
+    const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+    const { user, token } = await authService.login({ identifier, password, ip });
     setAuthCookie(res, token);
-    ok(res, { user: userService.publicUser(user), token });
+    ok(res, { user: userService.publicUser(user, user._id), token });
   } catch (err) {
     next(err);
   }
@@ -75,7 +76,7 @@ async function logout(req, res, next) {
 
 async function me(req, res, next) {
   try {
-    ok(res, { user: userService.publicUser(req.user) });
+    ok(res, { user: userService.publicUser(req.user, req.user._id) });
   } catch (err) {
     next(err);
   }

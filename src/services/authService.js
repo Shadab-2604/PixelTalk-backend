@@ -81,16 +81,49 @@ async function register({ username, displayName, email, password, avatarId }) {
   return { user, token: issueToken(user) };
 }
 
-async function login({ identifier, password }) {
+const AdminAuditLog = require('../models/AdminAuditLog');
+
+async function login({ identifier, password, ip = 'unknown' }) {
   const cleanId = String(identifier || '').toLowerCase().trim();
   const user = await User.findOne({ $or: [{ email: cleanId }, { username: cleanId }] }).select('+passwordHash');
-  if (!user) throw new ApiError(401, 'Invalid credentials');
+  
+  if (!user) {
+    // If an attempted login targeted the configured admin identifier, log the failure
+    if (cleanId === config.adminUsername || cleanId === config.adminEmail) {
+      AdminAuditLog.create({
+        adminId: null,
+        action: 'ADMIN_LOGIN_FAILED',
+        targetType: 'security',
+        metadata: { identifier: cleanId, reason: 'Account not found', ip },
+      }).catch(() => {});
+    }
+    throw new ApiError(401, 'Invalid credentials');
+  }
 
   const matches = await user.comparePassword(password);
-  if (!matches) throw new ApiError(401, 'Invalid credentials');
+  if (!matches) {
+    if (user.role === 'admin') {
+      AdminAuditLog.create({
+        adminId: user._id,
+        action: 'ADMIN_LOGIN_FAILED',
+        targetType: 'security',
+        metadata: { username: user.username, reason: 'Invalid password', ip },
+      }).catch(() => {});
+    }
+    throw new ApiError(401, 'Invalid credentials');
+  }
 
   if (user.status === 'banned') throw new ApiError(403, 'This account has been banned');
   if (user.status === 'suspended') throw new ApiError(403, 'This account is suspended');
+
+  if (user.role === 'admin') {
+    AdminAuditLog.create({
+      adminId: user._id,
+      action: 'ADMIN_LOGIN_SUCCESS',
+      targetType: 'security',
+      metadata: { username: user.username, ip },
+    }).catch(() => {});
+  }
 
   return { user, token: issueToken(user) };
 }

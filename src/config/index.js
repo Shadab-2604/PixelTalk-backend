@@ -40,10 +40,12 @@ module.exports = {
   // Email configuration (Brevo HTTPS REST API)
   brevoApiKey: process.env.BREVO_API_KEY,
   emailFrom: process.env.EMAIL_FROM || 'PixelTalk <skgamerpro123@gmail.com>',
+  // Platform Administrator Account (Credentials loaded strictly in backend runtime)
   adminEmail: (process.env.ADMIN_EMAIL || 'admin@pixeltalk.dev').toLowerCase().trim(),
   adminUsername: (process.env.ADMIN_USERNAME || 'admin').toLowerCase().trim(),
-  adminDisplayName: process.env.ADMIN_DISPLAY_NAME || 'Admin',
-  adminPassword: process.env.ADMIN_PASSWORD || 'admin123456',
+  adminDisplayName: process.env.ADMIN_DISPLAY_NAME || 'Platform Admin',
+  adminPassword: process.env.ADMIN_PASSWORD || '',
+  adminPasswordHash: process.env.ADMIN_PASSWORD_HASH || '',
   // Cloudinary media storage configuration — credentials read from backend/.env only
   cloudinaryCloudName: process.env.CLOUDINARY_CLOUD_NAME,
   cloudinaryApiKey: process.env.CLOUDINARY_API_KEY,

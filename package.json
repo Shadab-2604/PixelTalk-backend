@@ -8,6 +8,7 @@
     "dev": "node src/server.js",
     "build": "npm install",
     "start": "node src/server.js",
+    "test": "node --test src/tests/**/*.test.js",
     "seed": "node src/utils/seed.js",
     "seed:admin": "node src/utils/seedAdmin.js"
   },
