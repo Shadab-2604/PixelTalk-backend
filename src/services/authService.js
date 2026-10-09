@@ -35,6 +35,7 @@ const emailService = require('./emailService');
  */
 function issueToken(user) {
   return jwt.sign({ sub: user._id.toString(), role: user.role }, config.jwtSecret, {
+    algorithm: 'HS256',
     expiresIn: config.jwtExpiresIn,
   });
 }
@@ -46,7 +47,9 @@ function issueToken(user) {
  * @returns {object} Decoded JWT payload
  */
 function verifyToken(token) {
-  return jwt.verify(token, config.jwtSecret);
+  return jwt.verify(token, config.jwtSecret, {
+    algorithms: ['HS256'],
+  });
 }
 
 function authCookieOptions() {

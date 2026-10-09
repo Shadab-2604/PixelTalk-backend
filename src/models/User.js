@@ -70,6 +70,12 @@ const userSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
+// Performance indexes for query filtering & administrative views
+userSchema.index({ role: 1, status: 1 });
+userSchema.index({ status: 1 });
+userSchema.index({ createdAt: -1 });
+userSchema.index({ displayName: 1 });
+
 // Hash whenever the password field is set or changed (unless already a valid bcrypt hash)
 userSchema.pre('save', async function hashPassword() {
   if (!this.isModified('passwordHash')) return;

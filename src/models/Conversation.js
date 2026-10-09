@@ -111,6 +111,8 @@ conversationSchema.pre('validate', function (next) {
 });
 
 conversationSchema.index({ members: 1 });
+conversationSchema.index({ members: 1, updatedAt: -1 });
+conversationSchema.index({ members: 1, type: 1 });
 conversationSchema.index({ type: 1 });
 conversationSchema.index({ name: 1 });
 conversationSchema.index({ createdBy: 1 });

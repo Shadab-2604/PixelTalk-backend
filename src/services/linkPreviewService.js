@@ -21,31 +21,112 @@
 
 const http = require('http');
 const https = require('https');
+const dns = require('dns');
 const { URL } = require('url');
 
+const BLOCKED_HOSTNAMES = new Set([
+  'localhost',
+  '127.0.0.1',
+  '0.0.0.0',
+  '::1',
+  '169.254.169.254',
+  'metadata.google.internal',
+  'instance-data',
+]);
+
+/**
+ * Validates whether an IP address (IPv4 or IPv6) is private, loopback, link-local, or reserved.
+ * @param {string} ip
+ * @returns {boolean} True if IP is private/reserved, false otherwise.
+ */
+function isPrivateIp(ip) {
+  if (!ip || typeof ip !== 'string') return true;
+  const cleanIp = ip.trim().toLowerCase();
+
+  // IPv4-mapped IPv6 check (e.g. ::ffff:127.0.0.1)
+  if (cleanIp.startsWith('::ffff:')) {
+    const mappedIpv4 = cleanIp.slice(7);
+    return isPrivateIp(mappedIpv4);
+  }
+
+  // IPv6 checks
+  if (cleanIp.includes(':')) {
+    if (cleanIp === '::' || cleanIp === '::1') return true;
+    if (cleanIp.startsWith('fc') || cleanIp.startsWith('fd')) return true; // Unique Local Address (ULA) fc00::/7
+    if (cleanIp.startsWith('fe80:')) return true; // Link-local fe80::/10
+    if (cleanIp.startsWith('ff')) return true; // Multicast ff00::/8
+    if (cleanIp.startsWith('2001:db8:')) return true; // Documentation
+    return false;
+  }
+
+  // IPv4 checks
+  const parts = cleanIp.split('.').map((p) => Number.parseInt(p, 10));
+  if (parts.length !== 4 || parts.some(Number.isNaN)) {
+    return true;
+  }
+
+  const [a, b, c, d] = parts;
+  if (a < 0 || a > 255 || b < 0 || b > 255 || c < 0 || c > 255 || d < 0 || d > 255) {
+    return true;
+  }
+
+  if (a === 0) return true; // 0.0.0.0/8 (Current network)
+  if (a === 10) return true; // 10.0.0.0/8 (Private)
+  if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 (Carrier-grade NAT)
+  if (a === 127) return true; // 127.0.0.0/8 (Loopback)
+  if (a === 169 && b === 254) return true; // 169.254.0.0/16 (Link-local / Cloud metadata)
+  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12 (Private)
+  if (a === 192 && b === 0 && c === 0) return true; // 192.0.0.0/24 (IETF protocol assignments)
+  if (a === 192 && b === 0 && c === 2) return true; // 192.0.2.0/24 (TEST-NET-1)
+  if (a === 192 && b === 168) return true; // 192.168.0.0/16 (Private)
+  if (a === 198 && b >= 18 && b <= 19) return true; // 198.18.0.0/15 (Network benchmark tests)
+  if (a === 198 && b === 51 && c === 100) return true; // 198.51.100.0/24 (TEST-NET-2)
+  if (a === 203 && b === 0 && c === 113) return true; // 203.0.113.0/24 (TEST-NET-3)
+  if (a >= 224 && a <= 239) return true; // 224.0.0.0/4 (Multicast)
+  if (a >= 240) return true; // 240.0.0.0/4 (Reserved)
+
+  return false;
+}
+
+/**
+ * Checks if a hostname or IP string resolves to a private or restricted destination.
+ * @param {string} hostname
+ * @returns {boolean}
+ */
 function isPrivateHost(hostname) {
   if (!hostname || typeof hostname !== 'string') return true;
   const h = hostname.toLowerCase().trim();
 
-  if (h === 'localhost' || h === '127.0.0.1' || h === '0.0.0.0' || h === '::1' || h === '169.254.169.254') {
-    return true;
-  }
+  if (BLOCKED_HOSTNAMES.has(h)) return true;
   if (h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.lan') || h.endsWith('.localhost')) {
     return true;
   }
 
-  // IPv4 private ranges check
-  const ipParts = h.split('.').map((p) => Number.parseInt(p, 10));
-  if (ipParts.length === 4 && !ipParts.some(Number.isNaN)) {
-    const [a, b] = ipParts;
-    if (a === 10) return true; // 10.0.0.0/8
-    if (a === 127) return true; // 127.0.0.0/8
-    if (a === 169 && b === 254) return true; // 169.254.0.0/16
-    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
-    if (a === 192 && b === 168) return true; // 192.168.0.0/16
-  }
+  return isPrivateIp(h);
+}
 
-  return false;
+/**
+ * Asynchronously verifies DNS records for a given hostname to guarantee
+ * that none of the resolved A/AAAA records point to private or reserved subnets.
+ * @param {string} hostname
+ * @returns {Promise<boolean>} Resolves to true if safe, false if blocked.
+ */
+async function isSafeDestination(hostname) {
+  if (isPrivateHost(hostname)) return false;
+
+  try {
+    const addresses = await dns.promises.lookup(hostname, { all: true });
+    if (!addresses || addresses.length === 0) return false;
+
+    for (const record of addresses) {
+      if (isPrivateIp(record.address)) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function extractMetaTag(html, propertyOrName) {
@@ -92,8 +173,8 @@ function extractImage(html, baseUrl) {
   }
 }
 
-async function fetchPreview(urlStr) {
-  if (!urlStr || typeof urlStr !== 'string') return null;
+async function fetchPreview(urlStr, redirectCount = 0) {
+  if (!urlStr || typeof urlStr !== 'string' || redirectCount > 3) return null;
   const cleanUrl = urlStr.trim();
 
   let parsed;
@@ -107,7 +188,8 @@ async function fetchPreview(urlStr) {
     return null;
   }
 
-  if (isPrivateHost(parsed.hostname)) {
+  const isSafe = await isSafeDestination(parsed.hostname);
+  if (!isSafe) {
     return null;
   }
 
@@ -122,7 +204,19 @@ async function fetchPreview(urlStr) {
         },
         timeout: 3500,
       },
-      (res) => {
+      async (res) => {
+        // Handle safe redirects (301, 302, 303, 307, 308)
+        if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+          res.resume();
+          try {
+            const nextUrl = new URL(res.headers.location, cleanUrl).href;
+            const redirectedPreview = await fetchPreview(nextUrl, redirectCount + 1);
+            return resolve(redirectedPreview);
+          } catch {
+            return resolve(null);
+          }
+        }
+
         if (res.statusCode < 200 || res.statusCode >= 400) {
           res.resume();
           return resolve(null);
@@ -173,4 +267,6 @@ async function fetchPreview(urlStr) {
 module.exports = {
   fetchPreview,
   isPrivateHost,
+  isPrivateIp,
+  isSafeDestination,
 };

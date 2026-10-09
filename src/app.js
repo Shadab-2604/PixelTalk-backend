@@ -17,6 +17,7 @@ const cookieParser = require('cookie-parser');
 const routes = require('./routes');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { expressCorsOrigin } = require('./utils/cors');
+const { sanitizeMiddleware } = require('./middleware/sanitize');
 
 const app = express();
 
@@ -32,6 +33,7 @@ app.use(
 );
 app.use(express.json({ limit: '100kb' }));
 app.use(cookieParser());
+app.use(sanitizeMiddleware);
 
 app.get('/api/health', (req, res) =>
   res.json({ success: true, data: { status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() } }),
