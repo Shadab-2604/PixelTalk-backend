@@ -232,10 +232,13 @@ async function markRead(conversationId, userId) {
   assertValidId(conversationId);
   await assertMember(conversationId, userId);
 
+  const userObjectId = new mongoose.Types.ObjectId(userId);
+  const convoObjectId = new mongoose.Types.ObjectId(conversationId);
+
   const filter = {
-    conversationId,
-    senderId: { $ne: userId },
-    readBy: { $ne: userId },
+    conversationId: convoObjectId,
+    senderId: { $ne: userObjectId },
+    readBy: { $ne: userObjectId },
   };
 
   const unreadMsgs = await Message.find(filter).select('_id');
@@ -244,7 +247,7 @@ async function markRead(conversationId, userId) {
   const ids = unreadMsgs.map((m) => m._id);
 
   await Message.updateMany(filter, {
-    $addToSet: { readBy: userId, deliveredTo: userId },
+    $addToSet: { readBy: userObjectId, deliveredTo: userObjectId },
     $set: { status: 'read' },
   });
 

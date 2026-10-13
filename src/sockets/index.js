@@ -140,6 +140,8 @@ async function logCallMessage(io, call, status) {
       content,
       messageType: 'text',
       status: 'sent',
+      deliveredTo: [call.callerId],
+      readBy: [call.callerId],
     });
 
     await Conversation.findByIdAndUpdate(call.conversationId, {
@@ -198,6 +200,8 @@ async function logGroupCallMessage(io, call) {
       content,
       messageType: 'text',
       status: 'sent',
+      deliveredTo: [call.initiatorId],
+      readBy: [call.initiatorId],
     });
 
     await Conversation.findByIdAndUpdate(call.conversationId, {
@@ -427,10 +431,15 @@ function initSockets(httpServer) {
       try {
         const activeUser = socket.data.user || user;
         const readIds = await messageService.markRead(conversationId, activeUser._id);
+        const uid = activeUser._id.toString();
+        io.to(`user:${uid}`).emit('conversation_read', {
+          conversationId: String(conversationId),
+          userId: uid,
+        });
         if (readIds.length) {
           io.to(roomFor(conversationId)).emit('message_read', {
-            conversationId,
-            userId: activeUser._id.toString(),
+            conversationId: String(conversationId),
+            userId: uid,
             messageIds: readIds,
             readAt: new Date().toISOString(),
           });

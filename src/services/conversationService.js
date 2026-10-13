@@ -81,6 +81,7 @@ async function listForUser(userId) {
     {
       $match: {
         conversationId: { $in: convoIds },
+        senderId: { $ne: userObjectId },
         readBy: { $ne: userObjectId },
         deletedAt: null,
         messageType: { $ne: 'system' },

@@ -60,6 +60,23 @@ async function uploadMedia(req, res, next) {
 async function markRead(req, res, next) {
   try {
     const messageIds = await messageService.markRead(req.params.conversationId, req.user._id);
+    const io = req.app.get('io');
+    if (io) {
+      const convoId = String(req.params.conversationId);
+      const uid = String(req.user._id);
+      io.to(`user:${uid}`).emit('conversation_read', {
+        conversationId: convoId,
+        userId: uid,
+      });
+      if (messageIds && messageIds.length) {
+        io.to(`conversation:${convoId}`).emit('message_read', {
+          conversationId: convoId,
+          userId: uid,
+          messageIds,
+          readAt: new Date().toISOString(),
+        });
+      }
+    }
     ok(res, { messageIds });
   } catch (err) {
     next(err);
