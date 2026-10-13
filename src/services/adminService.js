@@ -28,10 +28,21 @@ const Message = require('../models/Message');
 const AdminAuditLog = require('../models/AdminAuditLog');
 const { ApiError } = require('../utils/apiResponse');
 const { sanitizeLimit } = require('../utils/validation');
+const redisService = require('./redisService');
+
+async function invalidateAdminStats() {
+  if (!redisService.isRedisReady()) return;
+  try {
+    await redisService.deleteCache('pixeltalk:admin:stats');
+  } catch {
+    /* Safe fallback */
+  }
+}
 
 async function log(adminId, action, targetType, targetId, metadata = {}) {
   try {
     await AdminAuditLog.create({ adminId, action, targetType, targetId, metadata });
+    await invalidateAdminStats();
   } catch (err) {
     console.warn('[AdminService] Audit log write note:', err.message);
   }
@@ -42,6 +53,10 @@ async function escapeRx(term) {
 }
 
 async function stats() {
+  const cacheKey = 'pixeltalk:admin:stats';
+  const cached = await redisService.getCache(cacheKey);
+  if (cached) return cached;
+
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
 
@@ -67,7 +82,7 @@ async function stats() {
     AdminAuditLog.countDocuments({}),
   ]);
 
-  return {
+  const statsData = {
     totalUsers,
     activeUsers,
     onlineUsers,
@@ -78,7 +93,11 @@ async function stats() {
     messagesToday,
     totalAuditLogs,
   };
+
+  await redisService.setCache(cacheKey, statsData, 30);
+  return statsData;
 }
+
 
 async function listUsers({ q, status, role, page = 1, limit = 20 }) {
   const query = {};

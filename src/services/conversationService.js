@@ -226,7 +226,9 @@ async function searchRooms(q, limit) {
 }
 
 async function getOrCreateDirect(userA, userB) {
-  if (userA.toString() === userB.toString()) throw new ApiError(400, 'Cannot start a direct chat with yourself');
+  const userAId = String(userA);
+  if (!userAId || !mongoose.isValidObjectId(userAId)) throw new ApiError(400, 'Invalid current user ID');
+  if (userAId === String(userB)) throw new ApiError(400, 'Cannot start a direct chat with yourself');
   if (!mongoose.isValidObjectId(userB)) throw new ApiError(400, 'Invalid recipient user ID');
 
   const targetUser = await User.findById(userB);

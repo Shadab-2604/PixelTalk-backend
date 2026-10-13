@@ -24,8 +24,31 @@ const mongoose = require('mongoose');
 const User = require('../models/User');
 const { ApiError } = require('../utils/apiResponse');
 const { requireString, validEmail, validUsername, validAvatarId, sanitizeLimit } = require('../utils/validation');
+const redisService = require('./redisService');
 
 const cloudinaryService = require('./cloudinaryService');
+
+/**
+ * Invalidate user profile and lookup caches across Redis
+ */
+async function invalidateUserCache(userId, username) {
+  if (!redisService.isRedisReady()) return;
+  try {
+    const promises = [];
+    if (userId) {
+      promises.push(redisService.deleteCache(`pixeltalk:user:byid:${userId}`));
+      promises.push(redisService.deleteByPrefix(`pixeltalk:user:profile:${userId}`));
+    }
+    if (username) {
+      promises.push(redisService.deleteByPrefix(`pixeltalk:user:profile:${username}`));
+    }
+    await Promise.all(promises);
+  } catch (err) {
+    // Non-blocking fallback
+    console.warn('[userService] Redis cache invalidation error:', err.message);
+  }
+}
+
 
 function publicUser(u, viewerId = null, followStatus = null) {
   if (!u) return null;
@@ -187,6 +210,10 @@ async function updateMe(user, body) {
   }
 
   const updated = await User.findByIdAndUpdate(user._id, updates, { new: true, runValidators: true });
+  await invalidateUserCache(user._id, user.username);
+  if (updates.username && updates.username !== user.username) {
+    await invalidateUserCache(user._id, updates.username);
+  }
   return updated;
 }
 
@@ -205,6 +232,7 @@ async function togglePinConversation(userId, conversationId) {
 
   user.pinnedConversations = updatedPins;
   await user.save();
+  await invalidateUserCache(userId, user.username);
   return { pinned: !isPinned, pinnedConversations: updatedPins };
 }
 
@@ -223,6 +251,7 @@ async function toggleMuteConversation(userId, conversationId) {
 
   user.mutedConversations = updatedMutes;
   await user.save();
+  await invalidateUserCache(userId, user.username);
   return { muted: !isMuted, mutedConversations: updatedMutes };
 }
 
@@ -241,6 +270,7 @@ async function toggleVibrateConversation(userId, conversationId) {
 
   user.vibrateConversations = updatedVibrate;
   await user.save();
+  await invalidateUserCache(userId, user.username);
   return { vibrate: !willVibrate, vibrateConversations: updatedVibrate };
 }
 
@@ -267,21 +297,30 @@ async function searchUsers(q, limit, viewerId = null) {
 
 async function getById(id) {
   if (!mongoose.isValidObjectId(id)) throw new ApiError(400, 'Invalid user id');
+  const cacheKey = `pixeltalk:user:byid:${id}`;
+  const cached = await redisService.getCache(cacheKey);
+  if (cached) return cached;
+
   const user = await User.findById(id);
   if (!user) throw new ApiError(404, 'User not found');
+  await redisService.setCache(cacheKey, user, 60);
   return user;
 }
 
 async function getProfile(idOrUsername, viewerId) {
   if (!idOrUsername) throw new ApiError(400, 'User identifier required');
 
+  const identifier = String(idOrUsername).trim().replace(/^@+/, '').toLowerCase();
+  const cacheKey = `pixeltalk:user:profile:${identifier}:${viewerId || 'anon'}`;
+  const cached = await redisService.getCache(cacheKey);
+  if (cached) return cached;
+
   let user = null;
   if (mongoose.isValidObjectId(idOrUsername)) {
     user = await User.findById(idOrUsername);
   }
   if (!user) {
-    const cleanUsername = String(idOrUsername).trim().replace(/^@+/, '').toLowerCase();
-    user = await User.findOne({ username: cleanUsername });
+    user = await User.findOne({ username: identifier });
   }
 
   if (!user || user.status !== 'active') throw new ApiError(404, 'User not found or account is inactive');
@@ -311,12 +350,17 @@ async function getProfile(idOrUsername, viewerId) {
     socialContext = await followService.getCommonFollowers(viewerId, user._id);
   }
 
-  return {
+  const profileData = {
     ...base,
     followersCount: counts.followersCount,
     followingCount: counts.followingCount,
     socialContext,
   };
+
+  // Cache public/viewer profile response with a short TTL (60 seconds)
+  await redisService.setCache(cacheKey, profileData, 60);
+
+  return profileData;
 }
 
 async function updateAvatar(userId, fileBuffer) {
@@ -334,6 +378,7 @@ async function updateAvatar(userId, fileBuffer) {
     cloudinaryService.deleteImage(oldPublicId).catch(() => {});
   }
 
+  await invalidateUserCache(userId, user.username);
   return user;
 }
 
@@ -349,6 +394,7 @@ async function deleteAvatar(userId) {
   user.avatarPublicId = '';
   await user.save();
 
+  await invalidateUserCache(userId, user.username);
   return user;
 }
 
@@ -367,6 +413,7 @@ async function updateBanner(userId, fileBuffer) {
     cloudinaryService.deleteImage(oldPublicId).catch(() => {});
   }
 
+  await invalidateUserCache(userId, user.username);
   return user;
 }
 
@@ -382,6 +429,7 @@ async function deleteBanner(userId) {
   user.bannerPublicId = '';
   await user.save();
 
+  await invalidateUserCache(userId, user.username);
   return user;
 }
 

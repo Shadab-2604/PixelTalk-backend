@@ -16,8 +16,10 @@
  * pair of users will always resolve to the existing direct conversation without duplication.
  */
 
+const mongoose = require('mongoose');
 const { ok } = require('../utils/apiResponse');
 const conversationService = require('../services/conversationService');
+const User = require('../models/User');
 const userService = require('../services/userService');
 
 async function list(req, res, next) {
@@ -95,8 +97,17 @@ async function uploadGroupAvatar(req, res, next) {
 
 async function startDirect(req, res, next) {
   try {
-    const targetUserId = req.body.userId || req.body.targetUserId;
-    const { convo, created } = await conversationService.getOrCreateDirect(req.user._id, targetUserId);
+    const targetUserId = req.body.userId || req.body.targetUserId || req.body.username;
+    let resolvedRecipient = targetUserId;
+
+    // Support starting a direct chat with a username string in addition to an ObjectId.
+    if (typeof targetUserId === 'string' && /^[a-zA-Z0-9_]+$/.test(targetUserId) && !mongoose.isValidObjectId(targetUserId)) {
+      const found = await User.findOne({ username: targetUserId }).select('_id');
+      if (!found) throw new ApiError(404, 'User not found');
+      resolvedRecipient = found._id;
+    }
+
+    const { convo, created } = await conversationService.getOrCreateDirect(req.user._id, resolvedRecipient);
     res.status(created ? 201 : 200).json({ success: true, data: { conversation: convo } });
   } catch (err) {
     next(err);

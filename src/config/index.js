@@ -51,4 +51,7 @@ module.exports = {
   cloudinaryApiKey: process.env.CLOUDINARY_API_KEY,
   cloudinaryApiSecret: process.env.CLOUDINARY_API_SECRET,
   maxFileSizeMb: Number(process.env.MAX_FILE_SIZE_MB || 25),
+  // Redis Cloud Database Configuration
+  redisUrl: process.env.REDIS_URL || '',
+  redisCacheEnabled: process.env.REDIS_CACHE_ENABLED !== 'false' && Boolean(process.env.REDIS_URL),
 };

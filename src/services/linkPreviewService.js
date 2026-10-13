@@ -22,7 +22,10 @@
 const http = require('http');
 const https = require('https');
 const dns = require('dns');
+const crypto = require('crypto');
 const { URL } = require('url');
+const redisService = require('./redisService');
+
 
 const BLOCKED_HOSTNAMES = new Set([
   'localhost',
@@ -188,6 +191,12 @@ async function fetchPreview(urlStr, redirectCount = 0) {
     return null;
   }
 
+  const cacheKey = `pixeltalk:linkpreview:${crypto.createHash('sha256').update(cleanUrl).digest('hex')}`;
+  if (redirectCount === 0) {
+    const cached = await redisService.getCache(cacheKey);
+    if (cached) return cached;
+  }
+
   const isSafe = await isSafeDestination(parsed.hostname);
   if (!isSafe) {
     return null;
@@ -211,6 +220,9 @@ async function fetchPreview(urlStr, redirectCount = 0) {
           try {
             const nextUrl = new URL(res.headers.location, cleanUrl).href;
             const redirectedPreview = await fetchPreview(nextUrl, redirectCount + 1);
+            if (redirectedPreview && redirectCount === 0) {
+              await redisService.setCache(cacheKey, redirectedPreview, 86400);
+            }
             return resolve(redirectedPreview);
           } catch {
             return resolve(null);
@@ -231,7 +243,7 @@ async function fetchPreview(urlStr, redirectCount = 0) {
             res.destroy();
           }
         });
-        res.on('end', () => {
+        res.on('end', async () => {
           try {
             const title = extractTitle(body);
             const description = extractDescription(body);
@@ -242,13 +254,20 @@ async function fetchPreview(urlStr, redirectCount = 0) {
               return resolve(null);
             }
 
-            resolve({
+            const previewData = {
               url: cleanUrl,
               title: title.slice(0, 150),
               description: description.slice(0, 300),
               image,
               domain,
-            });
+            };
+
+            // Cache link preview for 24 hours
+            if (redirectCount === 0) {
+              await redisService.setCache(cacheKey, previewData, 86400);
+            }
+
+            resolve(previewData);
           } catch {
             resolve(null);
           }

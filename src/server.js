@@ -179,6 +179,10 @@ async function start() {
   // Ensure admin user from .env exists and has admin authority
   await ensureAdminUser();
 
+  // Initialize Redis Cloud client connection for caching
+  const redisService = require('./services/redisService');
+  await redisService.connectRedis();
+
   const server = app.listen(config.port, '0.0.0.0', () => {
     console.log(`[backend] HTTP API ready on port ${config.port} (/api)`);
   });
@@ -194,7 +198,14 @@ start().catch((err) => {
 });
 
 // Graceful shutdown
-process.on('SIGINT', async () => {
+async function gracefulShutdown() {
+  console.log('[backend] Gracefully shutting down...');
+  const redisService = require('./services/redisService');
+  await redisService.disconnectRedis();
   await mongoose.disconnect();
   process.exit(0);
-});
+}
+
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
+

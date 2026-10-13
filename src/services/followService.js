@@ -134,19 +134,38 @@ async function unfollowUser(followerId, targetUserId, io = null) {
 }
 
 /**
- * Accept or reject a pending follow request (only the private account owner can do this).
+ * Accept or reject a pending follow request.
+ * Accepts requestId as a Follow _id (for /users/follow-requests/:followerId/respond)
+ * or targetUserId + followerId pair (for /users/follow-requests/:followerId/respond variant).
  */
-async function respondFollowRequest(targetUserId, followerId, action, io = null) {
+async function respondFollowRequest(targetUserId, followerIdOrRequestId, action, io = null) {
   const normAction = String(action || '').toUpperCase();
   if (!['ACCEPT', 'REJECT'].includes(normAction)) {
     throw new ApiError(400, "Action must be 'ACCEPT' or 'REJECT'");
   }
 
-  const follow = await Follow.findOne({
-    followerId,
-    followingId: targetUserId,
-    status: 'PENDING',
-  });
+  let follow = null;
+
+  // If followerIdOrRequestId looks like a request id, fetch by _id.
+  // Otherwise treat it as followerId (legacy call path).
+  if (mongoose.isValidObjectId(followerIdOrRequestId) && String(followerIdOrRequestId).length === 24) {
+    // Could be a Follow _id. Try to find by _id first.
+    const byId = await Follow.findById(followerIdOrRequestId).lean();
+    if (byId && byId.status === 'PENDING') {
+      follow = await Follow.findById(followerIdOrRequestId);
+      targetUserId = follow.followingId.toString();
+      followerId = follow.followerId.toString();
+    }
+  }
+
+  if (!follow) {
+    // Fallback to legacy (targetUserId, followerId) lookup.
+    follow = await Follow.findOne({
+      followerId: followerIdOrRequestId,
+      followingId: targetUserId,
+      status: 'PENDING',
+    });
+  }
 
   if (!follow) {
     throw new ApiError(404, 'Pending follow request not found');
